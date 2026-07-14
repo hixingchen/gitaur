@@ -51,11 +51,12 @@ export class ErrorBoundary extends Component<Props, State> {
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           justifyContent: 'center', height: '100vh', gap: 16,
-          background: '#141414', color: '#e0e0e0',
+          background: 'var(--ant-color-bg-layout, #f5f5f5)',
+          color: 'var(--ant-color-text, rgba(0,0,0,0.88))',
         }}>
           <div style={{ fontSize: 48 }}>😵</div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>页面出错了</div>
-          <div style={{ fontSize: 13, color: '#888' }}>正在自动恢复...</div>
+          <div style={{ fontSize: 13, color: 'var(--ant-color-text-secondary, rgba(0,0,0,0.45))' }}>正在自动恢复...</div>
         </div>
       );
     }

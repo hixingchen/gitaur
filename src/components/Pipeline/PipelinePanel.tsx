@@ -24,10 +24,10 @@ const { Text } = Typography;
 
 function getStatusIcon(status: StepStatus) {
   switch (status) {
-    case 'finish': return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
-    case 'error': return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
-    case 'process': return <LoadingOutlined style={{ color: '#1677ff' }} />;
-    case 'skip': return <CheckCircleOutlined style={{ color: '#999' }} />;
+    case 'finish': return <CheckCircleOutlined style={{ color: 'var(--ant-color-success, #52c41a)' }} />;
+    case 'error': return <CloseCircleOutlined style={{ color: 'var(--ant-color-error, #ff4d4f)' }} />;
+    case 'process': return <LoadingOutlined style={{ color: 'var(--ant-color-primary, #1677ff)' }} />;
+    case 'skip': return <CheckCircleOutlined style={{ color: 'var(--ant-color-text-tertiary, rgba(0,0,0,0.25))' }} />;
     default: return null;
   }
 }
@@ -508,7 +508,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
           <Input placeholder="例：用户登录功能" />
         </Form.Item>
         <Form.Item label="分支名称">
-          <Input.Group compact>
+          <Space.Compact style={{ width: '100%' }}>
             <Form.Item name="branchPrefix" noStyle>
               <Select style={{ width: 120 }}>
                 <Select.Option value="feature">feature</Select.Option>
@@ -517,9 +517,9 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
               </Select>
             </Form.Item>
             <Form.Item name="branchSuffix" noStyle>
-              <Input style={{ width: 'calc(100% - 120px)' }} placeholder="留空则使用任务名称" />
+              <Input style={{ flex: 1 }} placeholder="留空则使用任务名称" />
             </Form.Item>
-          </Input.Group>
+          </Space.Compact>
           <div style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary, #999)', marginTop: 4 }}>
             完整分支名：{branchPrefix}/{branchSuffix || taskName || '...'}
           </div>
@@ -670,7 +670,6 @@ export function PipelinePanel() {
     }
   }, [pipelineError, clearPipelineError]);
 
-  const repoPath = useRepoStore((s) => s.repoPath);
   const repoInfo = useRepoStore((s) => s.repoInfo);
   const checkout = useRepoStore((s) => s.checkout);
   const refreshStatusSilent = useRepoStore((s) => s.refreshStatusSilent);
@@ -856,13 +855,10 @@ export function PipelinePanel() {
             optionRender={(option) => {
               const task = allTasks.find((t) => t.id === option.value);
               if (!task) return null;
-              const statusIcon = task.status === 'running' ? '🔄' :
-                task.status === 'paused' ? '⏸️' :
-                task.status === 'pending' ? '⏳' :
-                task.status === 'success' ? '✅' : '❌';
+              const statusIcon = getTaskStatusTag(task.status);
               return (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{statusIcon}</span>
+                  <span style={{ fontSize: 14 }}>{statusIcon}</span>
                   <span>{task.name}</span>
                   <span style={{ color: token.colorTextSecondary, fontSize: 12 }}>{task.branchName}</span>
                 </div>

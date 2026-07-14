@@ -61,6 +61,7 @@ export function Titlebar() {
     justifyContent: 'center',
     outline: 'none',
     borderRadius: 0,
+    // 焦点样式通过 CSS 类实现（见 App.css .titlebar-btn:focus-visible）
   };
 
   return (

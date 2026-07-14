@@ -450,7 +450,7 @@ export function BranchPanel({ compact }: { compact?: boolean }) {
       <List.Item
         className="branch-item"
         style={{
-          padding: '6px 10px', borderRadius: 8, marginBottom: 4, cursor: 'default',
+          padding: '8px 10px', borderRadius: 8, marginBottom: 4, cursor: 'default',
           transition: 'background 0.15s',
         }}
         onMouseEnter={(e) => {

@@ -314,15 +314,19 @@ function App() {
 
   if (settingsLoading) {
     return (
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', background: '#141414',
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 16 }}>🦎</div>
-          <div style={{ color: '#8c8c8c' }}>加载中...</div>
+      <ConfigProvider
+        theme={{ algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm }}
+      >
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          height: '100vh', background: 'var(--ant-color-bg-layout, #f5f5f5)',
+        }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 32, marginBottom: 16 }}>🦎</div>
+            <div style={{ color: 'var(--ant-color-text-secondary, rgba(0,0,0,0.45))' }}>加载中...</div>
+          </div>
         </div>
-      </div>
+      </ConfigProvider>
     );
   }
 

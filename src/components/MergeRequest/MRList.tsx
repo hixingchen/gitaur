@@ -29,19 +29,27 @@ export function MRList({ onCreateMR, onSelectMR }: MRListProps) {
     }
   }, [currentProject, stateFilter]);
 
+  const [operatingMr, setOperatingMr] = useState<number | null>(null);
+
   const handleMerge = async (mrIid: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    const success = await mergeMR(mrIid);
-    if (success) {
-      message.success('MR 已合并');
+    setOperatingMr(mrIid);
+    try {
+      const success = await mergeMR(mrIid);
+      if (success) message.success('MR 已合并');
+    } finally {
+      setOperatingMr(null);
     }
   };
 
   const handleClose = async (mrIid: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    const success = await closeMR(mrIid);
-    if (success) {
-      message.success('MR 已关闭');
+    setOperatingMr(mrIid);
+    try {
+      const success = await closeMR(mrIid);
+      if (success) message.success('MR 已关闭');
+    } finally {
+      setOperatingMr(null);
     }
   };
 
@@ -156,6 +164,7 @@ export function MRList({ onCreateMR, onSelectMR }: MRListProps) {
                             icon={<MergeOutlined />}
                             onClick={(e) => handleMerge(mr.iid, e)}
                             disabled={mr.detailed_merge_status !== 'mergeable'}
+                            loading={operatingMr === mr.iid}
                           />
                         </Tooltip>
                         <Tooltip title="关闭">
@@ -164,6 +173,7 @@ export function MRList({ onCreateMR, onSelectMR }: MRListProps) {
                             size="small"
                             icon={<CloseCircleOutlined />}
                             onClick={(e) => handleClose(mr.iid, e)}
+                            loading={operatingMr === mr.iid}
                           />
                         </Tooltip>
                       </Space>
