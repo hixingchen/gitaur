@@ -15,11 +15,11 @@ function statusLabel(c: string): string {
 }
 
 const statusCfg: Record<string, { label: string; color: string }> = {
-  M: { label: 'M', color: '#faad14' },
-  A: { label: 'A', color: '#52c41a' },
-  D: { label: 'D', color: '#ff4d4f' },
-  R: { label: 'R', color: '#1890ff' },
-  '?': { label: '?', color: '#8c8c8c' },
+  M: { label: 'M', color: 'var(--ant-color-warning, #faad14)' },
+  A: { label: 'A', color: 'var(--ant-color-success, #52c41a)' },
+  D: { label: 'D', color: 'var(--ant-color-error, #ff4d4f)' },
+  R: { label: 'R', color: 'var(--ant-color-primary, #1677ff)' },
+  '?': { label: '?', color: 'var(--ant-color-text-tertiary, rgba(0,0,0,0.25))' },
 };
 
 type FileInfo = { path: string; status: string; staged: boolean };
@@ -51,19 +51,29 @@ const FileItem = memo(function FileItem({
     onSelect(file.path);
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect(file.path);
+    }
+  };
+
   return (
     <div
       className={isSelected ? 'file-item selected' : 'file-item'}
+      role="button"
+      tabIndex={0}
       style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', borderRadius: 8, cursor: 'pointer' }}
       onClick={handleRowClick}
+      onKeyDown={handleKeyDown}
     >
       <Checkbox checked={file.staged}
         onChange={handleCheckboxChange} style={{ margin: 0, flexShrink: 0 }} />
       <span style={{
         width: 22, height: 22, borderRadius: 5, flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: `${isConflict ? '#ff4d4f' : cfg.color}15`,
-        color: isConflict ? '#ff4d4f' : cfg.color,
+        background: isConflict ? 'rgba(255,77,79,0.15)' : `${cfg.color}15`,
+        color: isConflict ? 'var(--ant-color-error, #ff4d4f)' : cfg.color,
         fontSize: 11, fontWeight: 700,
       }}>
         {isConflict ? '!' : cfg.label}

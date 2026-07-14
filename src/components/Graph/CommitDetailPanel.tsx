@@ -7,11 +7,11 @@ import type { CommitFileChange } from '../../types/git';
 const { Text, Paragraph } = Typography;
 
 const STATUS_COLOR: Record<string, string> = {
-  M: '#1677ff',
-  A: '#52c41a',
-  D: '#ff4d4f',
-  R: '#722ed1',
-  C: '#13c2c2',
+  M: 'var(--ant-color-primary, #1677ff)',
+  A: 'var(--ant-color-success, #52c41a)',
+  D: 'var(--ant-color-error, #ff4d4f)',
+  R: 'var(--ant-color-purple, #722ed1)',
+  C: 'var(--ant-color-cyan, #13c2c2)',
 };
 
 function copyText(text: string) {
@@ -35,13 +35,13 @@ function DiffView({ diff }: { diff: string }) {
         let color = 'inherit';
         let bg = 'transparent';
         if (line.startsWith('+') && !line.startsWith('+++')) {
-          color = '#52c41a'; bg = 'rgba(82,196,26,0.08)';
+          color = 'var(--ant-color-success, #52c41a)'; bg = 'rgba(82,196,26,0.08)';
         } else if (line.startsWith('-') && !line.startsWith('---')) {
-          color = '#ff4d4f'; bg = 'rgba(255,77,79,0.08)';
+          color = 'var(--ant-color-error, #ff4d4f)'; bg = 'rgba(255,77,79,0.08)';
         } else if (line.startsWith('@@')) {
-          color = '#8c8c8c';
+          color = 'var(--ant-color-text-tertiary, rgba(0,0,0,0.25))';
         } else if (line.startsWith('diff ') || line.startsWith('index ')) {
-          color = '#8c8c8c';
+          color = 'var(--ant-color-text-tertiary, rgba(0,0,0,0.25))';
         }
         return (
           <div key={i} style={{ color, background: bg, padding: '0 2px' }}>
