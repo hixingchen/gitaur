@@ -1,5 +1,12 @@
 use super::GitOutput;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// Default timeout for git commands (30 seconds).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for long-running commands (clone, fetch, push, pull) — 5 minutes.
+const LONG_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Decode bytes using UTF-8, falling back to GBK for Windows Chinese systems.
 fn decode_output(bytes: &[u8]) -> String {
@@ -12,74 +19,68 @@ fn decode_output(bytes: &[u8]) -> String {
     decoded.into_owned()
 }
 
-/// Execute a git command in the given repository directory.
-/// Handles timeout, cancellation, and stderr capture.
+/// Determine if a git command is long-running and needs a longer timeout.
+fn is_long_running(args: &[&str]) -> bool {
+    matches!(args.first(), Some(&"clone" | &"fetch" | &"pull" | &"push"))
+}
+
+/// Execute a git command in the given repository directory with timeout.
 pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
-    let output = Command::new("git")
+    let timeout = if is_long_running(args) {
+        LONG_TIMEOUT
+    } else {
+        DEFAULT_TIMEOUT
+    };
+
+    let child = Command::new("git")
         .arg("-C")
         .arg(repo_path)
         .arg("-c")
         .arg("core.quotePath=false")
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to execute git: {}", e))?;
 
-    Ok(GitOutput {
-        stdout: decode_output(&output.stdout),
-        stderr: decode_output(&output.stderr),
-        exit_code: output.status.code().unwrap_or(-1),
-    })
-}
+    // Wait with timeout using a background thread
+    let (tx, rx) = std::sync::mpsc::channel();
+    let child_id = child.id();
 
-/// Execute a git command that may take a long time (clone, large diff).
-/// Returns stdout lines as they come via a callback.
-pub async fn execute_streaming<F>(
-    repo_path: &str,
-    args: &[&str],
-    mut on_line: F,
-) -> Result<GitOutput, String>
-where
-    F: FnMut(&str),
-{
-    use tokio::process::Command as AsyncCommand;
+    let thread_handle = std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
 
-    let mut child = AsyncCommand::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .arg("-c")
-        .arg("core.quotePath=false")
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn git: {}", e))?;
-
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let mut stdout_lines = String::new();
-    let mut reader = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
-        on_line(&line);
-        stdout_lines.push_str(&line);
-        stdout_lines.push('\n');
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => Ok(GitOutput {
+            stdout: decode_output(&output.stdout),
+            stderr: decode_output(&output.stderr),
+            exit_code: output.status.code().unwrap_or(-1),
+        }),
+        Ok(Err(e)) => Err(format!("Git process error: {}", e)),
+        Err(_) => {
+            // Timeout — try to kill the process
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &child_id.to_string()])
+                    .output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = Command::new("kill")
+                    .args(["-9", &child_id.to_string()])
+                    .output();
+            }
+            // 等待线程退出（进程被 kill 后应该很快退出）
+            let _ = thread_handle.join();
+            Err(format!(
+                "Git command timed out after {}s: git {}",
+                timeout.as_secs(),
+                args.join(" ")
+            ))
+        }
     }
-
-    let mut stderr_bytes = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(
-        &mut tokio::io::BufReader::new(stderr),
-        &mut stderr_bytes,
-    )
-    .await
-    .unwrap_or_default();
-
-    let status = child.wait().await.map_err(|e| format!("Git process error: {}", e))?;
-
-    Ok(GitOutput {
-        stdout: stdout_lines,
-        stderr: decode_output(&stderr_bytes),
-        exit_code: status.code().unwrap_or(-1),
-    })
 }
+

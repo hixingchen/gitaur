@@ -90,22 +90,6 @@ export function SettingsPage() {
           </Form.Item>
         </Card>
 
-        {/* Gitee 配置 */}
-        <Card
-          title={
-            <Space>
-              <CloudOutlined />
-              <span>Gitee 配置</span>
-            </Space>
-          }
-          size="small"
-          style={{ marginBottom: 24 }}
-        >
-          <Form.Item name="giteeToken" label="Personal Access Token" extra="用于访问 Gitee API">
-            <Input.Password placeholder="Gitee Access Token" />
-          </Form.Item>
-        </Card>
-
         {/* 数据存储路径 */}
         <Card
           title={

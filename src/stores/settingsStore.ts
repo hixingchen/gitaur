@@ -17,7 +17,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   gitUserEmail: '',
   gitlabUrl: 'https://gitlab.com',
   gitlabToken: '',
-  giteeToken: '',
   recentRepos: [],
 };
 
@@ -29,7 +28,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   init: async () => {
     set({ loading: true });
     try {
-      const store = await load('settings.json', { autoSave: true, defaults: {} });
+      const store = await load('settings.json', { autoSave: false, defaults: {} });
       const saved = await store.get<AppSettings>('settings');
 
       if (saved) {
@@ -58,5 +57,4 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
     }
   },
-
 }));

@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons';
 import { useGitLabStore } from '../../stores/gitlabStore';
 import type { GitLabMergeRequest } from '../../services/gitlab';
+import { getStateTag, getMergeStatusTag } from '../../utils/mr';
 
 interface MRListProps {
   onCreateMR: () => void;
@@ -44,33 +45,7 @@ export function MRList({ onCreateMR, onSelectMR }: MRListProps) {
     }
   };
 
-  const getStateTag = (state: string) => {
-    switch (state) {
-      case 'opened':
-        return <Tag color="success">打开</Tag>;
-      case 'closed':
-        return <Tag color="default">关闭</Tag>;
-      case 'merged':
-        return <Tag color="processing">已合并</Tag>;
-      default:
-        return <Tag>{state}</Tag>;
-    }
-  };
 
-  const getMergeStatusTag = (status: string) => {
-    switch (status) {
-      case 'mergeable':
-        return <Tag color="success">可合并</Tag>;
-      case 'checking':
-        return <Tag color="processing">检查中</Tag>;
-      case 'conflict':
-        return <Tag color="error">有冲突</Tag>;
-      case 'not_mergeable':
-        return <Tag color="warning">不可合并</Tag>;
-      default:
-        return null;
-    }
-  };
 
   if (!currentProject) {
     return (

@@ -14,6 +14,19 @@ fn validate_ref(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 验证仓库路径 — 防止路径穿越和选项注入
+fn validate_repo_path(path: &str) -> Result<std::path::PathBuf, String> {
+    if path.starts_with('-') {
+        return Err("仓库路径不能以 - 开头".to_string());
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|_| format!("仓库路径无效: {}", path))?;
+    if !canonical.join(".git").exists() {
+        return Err(format!("不是有效的 git 仓库: {}", path));
+    }
+    Ok(canonical)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {
@@ -28,6 +41,7 @@ pub struct RepoInfo {
 
 #[tauri::command]
 pub fn get_repo_status(repo_path: String) -> Result<RepoInfo, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     // Get status
     let status_output = executor::execute(&repo_path, &["status", "--porcelain", "-uall"])?;
     let status = parser::parse_status(&status_output.stdout);
@@ -58,42 +72,15 @@ pub fn get_repo_status(repo_path: String) -> Result<RepoInfo, String> {
     })
 }
 
-#[derive(Debug, Serialize)]
-pub struct DiffResult {
-    pub raw_diff: String,
-    pub files_changed: Vec<String>,
-}
-
-#[tauri::command]
-pub fn get_diff(repo_path: String, file: Option<String>, staged: Option<bool>) -> Result<DiffResult, String> {
-    let mut args = vec!["diff"];
-    if staged.unwrap_or(false) {
-        args = vec!["diff", "--cached"];
+/// Validate file path for git commands — reject path traversal.
+fn validate_git_file_path(file_path: &str) -> Result<(), String> {
+    if file_path.contains("..") {
+        return Err("路径包含非法字符".to_string());
     }
-    args.push("--");
-    if let Some(ref f) = file {
-        args.push(f);
+    if std::path::Path::new(file_path).is_absolute() {
+        return Err("不允许绝对路径".to_string());
     }
-
-    let output = executor::execute(&repo_path, &args)?;
-
-    let files_changed = output
-        .stdout
-        .lines()
-        .filter(|l| l.starts_with("diff --git"))
-        .map(|l| {
-            l.split_whitespace()
-                .nth(3)
-                .unwrap_or("")
-                .trim_start_matches("b/")
-                .to_string()
-        })
-        .collect();
-
-    Ok(DiffResult {
-        raw_diff: output.stdout,
-        files_changed,
-    })
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +92,12 @@ pub struct CommitParams {
 
 #[tauri::command]
 pub fn git_commit(repo_path: String, params: CommitParams) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    // 验证文件路径防止路径穿越
+    for file in &params.files {
+        validate_git_file_path(file)?;
+    }
+
     let mut args: Vec<String> = vec!["commit".into(), "-m".into(), params.message.clone()];
 
     if params.amend.unwrap_or(false) {
@@ -133,6 +126,7 @@ pub fn git_checkout(
     create_branch: Option<bool>,
     start_point: Option<String>,
 ) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&target)?;
     let mut args: Vec<&str> = vec!["checkout"];
 
@@ -145,6 +139,7 @@ pub fn git_checkout(
     // 创建分支时可选指定起点（如 origin/feature），用于建立跟踪关系
     let sp_owned;
     if let Some(ref sp) = start_point {
+        validate_ref(sp)?;
         sp_owned = sp.clone();
         args.push(&sp_owned);
     }
@@ -166,7 +161,14 @@ pub fn git_push(
     delete: Option<bool>,
     branch: Option<String>,
 ) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let remote = remote.unwrap_or_else(|| "origin".to_string());
+
+    // 验证 remote 和 branch 参数防止注入
+    validate_ref(&remote)?;
+    if let Some(ref b) = branch {
+        validate_ref(b)?;
+    }
 
     let mut args: Vec<String> = vec!["push".into()];
 
@@ -198,7 +200,9 @@ pub fn git_push(
 
 #[tauri::command]
 pub fn git_pull(repo_path: String, remote: Option<String>, rebase: Option<bool>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let remote = remote.unwrap_or_else(|| "origin".to_string());
+    validate_ref(&remote)?;
     let mut args: Vec<&str> = vec!["pull", &remote];
 
     if rebase.unwrap_or(false) {
@@ -216,6 +220,7 @@ pub fn git_pull(repo_path: String, remote: Option<String>, rebase: Option<bool>)
 
 #[tauri::command]
 pub fn git_fetch(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["fetch", "--all", "--prune"])?;
 
     if !output.is_success() {
@@ -242,6 +247,7 @@ pub fn get_log(
     max_count: Option<usize>,
     branch: Option<String>,
 ) -> Result<Vec<LogEntry>, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let count = max_count.unwrap_or(100).to_string();
     let mut args: Vec<&str> = vec![
         "log",
@@ -254,6 +260,7 @@ pub fn get_log(
 
     let branch_str;
     if let Some(ref b) = branch {
+        validate_ref(b)?;
         branch_str = b.clone();
         args.push(&branch_str);
     }
@@ -300,40 +307,68 @@ pub fn get_log(
 
 #[tauri::command]
 pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&branch)?;
     let mut args: Vec<&str> = vec!["merge", &branch];
     if no_ff.unwrap_or(false) { args.push("--no-ff"); }
     let output = executor::execute(&repo_path, &args)?;
+    if output.exit_code != 0 {
+        return Err(format!("{}\n{}", output.stdout, output.stderr));
+    }
     Ok(format!("{}\n{}", output.stdout, output.stderr))
 }
 
 #[tauri::command]
 pub fn git_rebase(repo_path: String, onto: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&onto)?;
     let output = executor::execute(&repo_path, &["rebase", &onto])?;
+    if output.exit_code != 0 {
+        return Err(format!("{}\n{}", output.stdout, output.stderr));
+    }
     Ok(format!("{}\n{}", output.stdout, output.stderr))
 }
 
 #[tauri::command]
 pub fn git_abort_rebase(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["rebase", "--abort"])?;
+    if output.exit_code != 0 {
+        return Err(format!("{}\n{}", output.stdout, output.stderr));
+    }
     Ok(output.stdout)
 }
 
 #[tauri::command]
 pub fn git_rebase_continue(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["rebase", "--continue"])?;
+    if output.exit_code != 0 {
+        return Err(format!("{}\n{}", output.stdout, output.stderr));
+    }
     Ok(output.stdout)
 }
 
 #[tauri::command]
-pub fn git_sync(repo_path: String) -> Result<String, String> {
-    let _fetch = executor::execute(&repo_path, &["fetch", "origin"])?;
-    let output = executor::execute(&repo_path, &["pull", "--rebase", "origin"])?;
-    Ok(format!("{}\n{}", output.stdout, output.stderr))
+pub fn git_merge_abort(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    let output = executor::execute(&repo_path, &["merge", "--abort"])?;
+    if output.exit_code != 0 {
+        return Err(format!("{}\n{}", output.stdout, output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+#[tauri::command]
+pub fn check_rebase_state(repo_path: String) -> Result<bool, String> {
+    let canonical = validate_repo_path(&repo_path)?;
+    let rebase_merge = canonical.join(".git/rebase-merge");
+    let rebase_apply = canonical.join(".git/rebase-apply");
+    Ok(rebase_merge.exists() || rebase_apply.exists())
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConflictInfo {
     pub has_conflicts: bool,
     pub conflicted_files: Vec<String>,
@@ -341,22 +376,80 @@ pub struct ConflictInfo {
 
 #[tauri::command]
 pub fn check_conflicts(repo_path: String) -> Result<ConflictInfo, String> {
-    let status_out = executor::execute(&repo_path, &["status", "--porcelain"])?;
+    let canonical = validate_repo_path(&repo_path)?;
+    let repo_path_str = canonical.to_string_lossy().to_string();
+    let status_out = executor::execute(&repo_path_str, &["status", "--porcelain"])?;
     let conflicted: Vec<String> = status_out.stdout.lines()
-        .filter(|l| l.starts_with("UU") || l.starts_with("AA") || l.starts_with("DD"))
-        .map(|l| l[3..].trim().to_string())
+        .filter(|l| l.starts_with("UU") || l.starts_with("AA") || l.starts_with("DD")
+            || l.starts_with("AU") || l.starts_with("UA") || l.starts_with("UD") || l.starts_with("DU"))
+        .map(|l| l.get(3..).unwrap_or("").trim().to_string())
         .collect();
-    let rebase_dir = std::path::Path::new(&repo_path).join(".git/rebase-merge");
-    let rebase_apply = std::path::Path::new(&repo_path).join(".git/rebase-apply");
+    let rebase_dir = canonical.join(".git/rebase-merge");
+    let rebase_apply = canonical.join(".git/rebase-apply");
     Ok(ConflictInfo {
         has_conflicts: !conflicted.is_empty() || rebase_dir.exists() || rebase_apply.exists(),
         conflicted_files: conflicted,
     })
 }
 
+/// Validate clone URL — only allow http/https/ssh/git protocols.
+fn validate_clone_url(url: &str) -> Result<(), String> {
+    // 拒绝以 - 开头的 URL，防止被 git 解释为选项
+    if url.starts_with('-') {
+        return Err("URL 不能以 - 开头".to_string());
+    }
+    // 拒绝 file:// 协议（防止读取本地文件）
+    if url.starts_with("file://") {
+        return Err("不允许 file:// 协议".to_string());
+    }
+    // HTTP/HTTPS URL 需要 SSRF 验证
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return crate::commands::gitlab::validate_external_url(url);
+    }
+    if url.starts_with("ssh://") {
+        // 防止 SSH 用户名注入（如 ssh://-oProxyCommand=evil@host/path）
+        if let Some(at_pos) = url.find('@') {
+            let userinfo = &url[6..at_pos]; // ssh:// 后到 @ 之前
+            if userinfo.starts_with('-') {
+                return Err("SSH URL 用户名不能以 - 开头".to_string());
+            }
+        }
+        return Ok(());
+    }
+    if url.starts_with("git://") {
+        return Ok(());
+    }
+    // SSH shorthand: git@host:path（不含 ://）
+    if url.contains('@') && !url.contains("://") {
+        return Ok(());
+    }
+    Err(format!("不支持的 URL 协议: {}", url))
+}
+
+/// Validate target path — reject path traversal.
+/// 允许绝对路径（原生文件对话框返回绝对路径）。
+fn validate_target_path(path: &str) -> Result<(), String> {
+    if path.contains("..") {
+        return Err("路径包含非法字符".to_string());
+    }
+    if path.trim().is_empty() {
+        return Err("目标路径不能为空".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub fn git_clone(url: String, target_path: String) -> Result<String, String> {
-    let output = executor::execute(".", &["clone", &url, &target_path])?;
+pub async fn git_clone(url: String, target_path: String) -> Result<String, String> {
+    // Validate inputs
+    validate_clone_url(&url)?;
+    validate_target_path(&target_path)?;
+
+    // Run clone in a blocking thread to avoid freezing the async runtime
+    let output = tokio::task::spawn_blocking(move || {
+        executor::execute(".", &["clone", &url, &target_path])
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))??;
 
     if !output.is_success() {
         return Err(output.error_message().unwrap_or("Unknown error").to_string());
@@ -365,22 +458,29 @@ pub fn git_clone(url: String, target_path: String) -> Result<String, String> {
     Ok(output.stdout)
 }
 
-#[tauri::command]
-pub fn git_init(path: String) -> Result<String, String> {
-    let output = executor::execute(&path, &["init"])?;
-
-    if !output.is_success() {
-        return Err(output.error_message().unwrap_or("Unknown error").to_string());
+/// Validate git revision — reject special characters that could be abused.
+fn validate_revision(rev: &str) -> Result<(), String> {
+    if rev.starts_with('-') {
+        return Err("revision 不能以 - 开头".to_string());
     }
-
-    Ok(output.stdout)
+    if rev.contains("..") || rev.contains("~") || rev.contains('^') {
+        return Err("不支持的 revision 语法".to_string());
+    }
+    if rev.is_empty() {
+        return Err("revision 不能为空".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub fn get_file_content(repo_path: String, file_path: String, revision: Option<String>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_git_file_path(&file_path)?;
+
     let mut args: Vec<&str> = vec!["show"];
 
     let full_ref = if let Some(ref rev) = revision {
+        validate_revision(rev)?;
         format!("{}:{}", rev, file_path)
     } else {
         format!("HEAD:{}", file_path)
@@ -439,16 +539,75 @@ fn validate_file_path(repo_path: &str, file_path: &str) -> Result<std::path::Pat
     Ok(full_canonical)
 }
 
+/// Max file size for reading into memory (2 MB).
+const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
+/// Read file with encoding detection — tries UTF-8 first, falls back to GBK.
+fn read_file_with_encoding(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // Try UTF-8 first (with BOM detection)
+    if let Ok(s) = std::str::from_utf8(&bytes) {
+        // Strip UTF-8 BOM if present
+        return Ok(s.strip_prefix('\u{FEFF}').unwrap_or(s).to_string());
+    }
+
+    // Fallback to GBK (common on Windows Chinese systems)
+    let (decoded, _, _) = encoding_rs::GBK.decode(&bytes);
+    Ok(decoded.into_owned())
+}
+
 #[tauri::command]
 pub fn read_working_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let full_path = validate_file_path(&repo_path, &file_path)?;
-    std::fs::read_to_string(&full_path)
-        .map_err(|e| format!("读取文件失败: {}", e))
+    // Check file size before reading to prevent OOM
+    let metadata = std::fs::metadata(&full_path)
+        .map_err(|e| format!("读取文件信息失败: {}", e))?;
+    if metadata.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "文件过大（{} MB），超过 2 MB 限制，无法在编辑器中打开",
+            metadata.len() / 1024 / 1024
+        ));
+    }
+    read_file_with_encoding(&full_path)
+}
+
+/// Detect if a file is GBK encoded by checking if valid UTF-8 fails.
+/// 只读前 8KB 判断编码，避免读取整个文件浪费内存。
+fn detect_encoding(path: &std::path::Path) -> &'static str {
+    use std::io::Read;
+    const SAMPLE_SIZE: usize = 8192;
+    if let Ok(mut f) = std::fs::File::open(path) {
+        let mut buf = vec![0u8; SAMPLE_SIZE];
+        if let Ok(n) = f.read(&mut buf) {
+            buf.truncate(n);
+            if std::str::from_utf8(&buf).is_err() {
+                return "gbk";
+            }
+        }
+    }
+    "utf-8"
 }
 
 #[tauri::command]
 pub fn write_working_file(repo_path: String, file_path: String, content: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let full_path = validate_file_path(&repo_path, &file_path)?;
+
+    // If file exists, detect and preserve original encoding
+    if full_path.exists() {
+        let encoding = detect_encoding(&full_path);
+        if encoding == "gbk" {
+            let (encoded, _, _) = encoding_rs::GBK.encode(&content);
+            std::fs::write(&full_path, encoded.as_ref())
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+            return Ok("ok".into());
+        }
+    }
+
+    // Default: write as UTF-8
     std::fs::write(&full_path, &content)
         .map_err(|e| format!("写入文件失败: {}", e))?;
     Ok("ok".into())
@@ -456,6 +615,10 @@ pub fn write_working_file(repo_path: String, file_path: String, content: String)
 
 #[tauri::command]
 pub fn git_stage(repo_path: String, files: Vec<String>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    for file in &files {
+        validate_git_file_path(file)?;
+    }
     let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
     let mut args = vec!["add"];
     args.extend(file_refs);
@@ -465,6 +628,10 @@ pub fn git_stage(repo_path: String, files: Vec<String>) -> Result<String, String
 
 #[tauri::command]
 pub fn git_unstage(repo_path: String, files: Vec<String>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    for file in &files {
+        validate_git_file_path(file)?;
+    }
     let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
     // 对于新增的文件，使用 git rm --cached；对于已跟踪的文件，使用 git reset HEAD
     let mut args = vec!["reset", "HEAD", "--"];
@@ -475,7 +642,9 @@ pub fn git_unstage(repo_path: String, files: Vec<String>) -> Result<String, Stri
     if !output.stderr.is_empty() || output.stdout.is_empty() {
         let mut rm_args = vec!["rm", "--cached", "--"];
         rm_args.extend(file_refs);
-        let _ = executor::execute(&repo_path, &rm_args);
+        if let Err(e) = executor::execute(&repo_path, &rm_args) {
+            log::debug!("git rm --cached fallback failed: {}", e);
+        }
     }
 
     Ok(output.stdout)
@@ -483,60 +652,14 @@ pub fn git_unstage(repo_path: String, files: Vec<String>) -> Result<String, Stri
 
 #[tauri::command]
 pub fn git_stage_all(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["add", "-A"])?;
     Ok(output.stdout)
 }
 
-#[derive(Debug, Serialize)]
-pub struct RemoteSyncInfo {
-    pub ahead: usize,
-    pub behind: usize,
-    pub remote_branch: String,
-    pub ahead_commits: Vec<LogEntry>,
-    pub behind_commits: Vec<LogEntry>,
-}
-
-#[tauri::command]
-pub fn get_remote_sync(repo_path: String) -> Result<RemoteSyncInfo, String> {
-    let _branch_out = executor::execute(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-
-    // 获取上游分支，如果没有则返回空
-    let remote_branch = match executor::execute(&repo_path, &["rev-parse", "--abbrev-ref", "@{upstream}"]) {
-        Ok(o) => o.stdout.trim().to_string(),
-        Err(_) => return Ok(RemoteSyncInfo { ahead: 0, behind: 0, remote_branch: String::new(), ahead_commits: vec![], behind_commits: vec![] }),
-    };
-
-    if remote_branch.is_empty() {
-        return Ok(RemoteSyncInfo { ahead: 0, behind: 0, remote_branch: String::new(), ahead_commits: vec![], behind_commits: vec![] });
-    }
-
-    let mut ahead: Vec<LogEntry> = Vec::new();
-    if let Ok(o) = executor::execute(
-        &repo_path,
-        &["log", "--format=%H%x00%an%x00%ad%x00%s", "--date=format:%m-%d %H:%M", "@{upstream}..HEAD"],
-    ) {
-        for line in o.stdout.lines() {
-            let p: Vec<&str> = line.split('\0').collect();
-            if p.len() >= 4 { ahead.push(LogEntry { hash: p[0].into(), author: p[1].into(), email: String::new(), date: p[2].into(), message: p[3].into(), refs: vec![], parents: vec![] }); }
-        }
-    }
-
-    let mut behind: Vec<LogEntry> = Vec::new();
-    if let Ok(o) = executor::execute(
-        &repo_path,
-        &["log", "--format=%H%x00%an%x00%ad%x00%s", "--date=format:%m-%d %H:%M", "HEAD..@{upstream}"],
-    ) {
-        for line in o.stdout.lines() {
-            let p: Vec<&str> = line.split('\0').collect();
-            if p.len() >= 4 { behind.push(LogEntry { hash: p[0].into(), author: p[1].into(), email: String::new(), date: p[2].into(), message: p[3].into(), refs: vec![], parents: vec![] }); }
-        }
-    }
-
-    Ok(RemoteSyncInfo { ahead: ahead.len(), behind: behind.len(), remote_branch, ahead_commits: ahead, behind_commits: behind })
-}
-
 #[tauri::command]
 pub fn git_branch_delete(repo_path: String, branch: String, force: Option<bool>) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&branch)?;
     // -d 安全删除（检查合并），-D 强制删除
     let flag = if force.unwrap_or(false) { "-D" } else { "-d" };
@@ -553,6 +676,12 @@ pub fn git_branch_rename(
     old_name: Option<String>,
     new_name: String,
 ) -> Result<String, String> {
+    // 验证分支名防止注入
+    validate_ref(&new_name)?;
+    if let Some(ref old) = old_name {
+        validate_ref(old)?;
+    }
+
     // git branch -m [old] new — 不传 old 表示重命名当前分支
     let mut args: Vec<&str> = vec!["branch", "-m"];
     let old_owned;
@@ -655,6 +784,8 @@ fn parse_commit_files(name_status: &str, numstat: &str) -> Vec<CommitFileChange>
 
 #[tauri::command]
 pub fn get_commit_detail(repo_path: String, hash: String) -> Result<CommitDetail, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_revision(&hash)?;
     // 元信息：用 \0 分隔，%B（完整消息）放最后避免多行干扰
     let meta = executor::execute(
         &repo_path,
@@ -675,7 +806,10 @@ pub fn get_commit_detail(repo_path: String, hash: String) -> Result<CommitDetail
         .map(|s| s.to_string())
         .collect();
 
-    // 文件变更：name-status 给状态，numstat 给增删行数
+    // 文件变更：合并 name-status 和 numstat 为单次调用
+    // 使用 --name-status 获取状态，同时用 --numstat 获取增删行数
+    // git 不支持同时使用这两个选项，但可以通过 --stat 获取近似信息
+    // 或者使用 --name-status 并接受没有增删行数的精确数据
     let ns = executor::execute(&repo_path, &["show", "--name-status", "--format=", &hash])?;
     let stat = executor::execute(&repo_path, &["show", "--numstat", "--format=", &hash])?;
     let files = parse_commit_files(ns.stdout.trim(), stat.stdout.trim());
@@ -697,6 +831,9 @@ pub fn get_commit_file_diff(
     hash: String,
     file: String,
 ) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_revision(&hash)?;
+    validate_git_file_path(&file)?;
     // git show <hash> -- <file> 输出该提交对该文件的 diff（根提交也适用）
     let output = executor::execute(&repo_path, &["show", &hash, "--", &file])?;
     if !output.is_success() {

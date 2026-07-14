@@ -67,6 +67,5 @@ export interface AppSettings {
   gitUserEmail: string;
   gitlabUrl: string;
   gitlabToken: string;
-  giteeToken: string;
   recentRepos: string[];
 }

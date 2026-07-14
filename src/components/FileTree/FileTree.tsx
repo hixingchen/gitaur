@@ -1,11 +1,13 @@
-import { Spin, Empty, Segmented, Button, Checkbox } from 'antd';
+import { Spin, Empty, Segmented, Button, Checkbox, Steps, Typography } from 'antd';
 import {
-  ReloadOutlined,
+  ReloadOutlined, EditOutlined, SaveOutlined, CheckCircleOutlined,
+  PlayCircleOutlined, StopOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { useViewStore } from '../../stores/viewStore';
-import { useMemo, useEffect, useState } from 'react';
+import { useMemo, useEffect, useState, memo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { List as FixedSizeList } from 'react-window';
 
 function statusLabel(c: string): string {
   const m: Record<string, string> = { M: '修改', A: '新增', D: '删除', R: '重命名', '?': '新增' };
@@ -22,8 +24,8 @@ const statusCfg: Record<string, { label: string; color: string }> = {
 
 type FileInfo = { path: string; status: string; staged: boolean };
 
-// 单行文件 — 不使用 memo，让父组件控制渲染
-function FileItem({
+// 单行文件 — memo 避免不必要重渲染
+const FileItem = memo(function FileItem({
   file, hasConflicts, onSelect, onToggle,
 }: {
   file: FileInfo;
@@ -35,11 +37,12 @@ function FileItem({
   const isSelected = selectedFile === file.path;
   const cfg = statusCfg[file.status] || statusCfg['?'];
   const isConflict = hasConflicts && ['M', 'D', 'A'].includes(file.status);
-  const parts = file.path.split('/');
+  // 跨平台路径分割：同时处理 / 和 \
+  const parts = file.path.split(/[/\\]/);
   const name = parts.pop() || file.path;
   const dir = parts.join('/');
 
-  const handleCheckboxChange = (e: any) => {
+  const handleCheckboxChange = (e: { stopPropagation: () => void }) => {
     e.stopPropagation();
     onToggle(file.path);
   };
@@ -89,8 +92,9 @@ function FileItem({
       </span>
     </div>
   );
-}
+});
 
+/** 文件面板标签页类型（预留扩展） */
 export type PanelTab = 'changes';
 
 interface FileTreeProps {
@@ -105,24 +109,44 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
   const stageFile = useRepoStore((s) => s.stageFile);
   const unstageFile = useRepoStore((s) => s.unstageFile);
   const stageAll = useRepoStore((s) => s.stageAll);
-  const abortRebase = useRepoStore((s) => s.abortRebase);
-  const rebaseContinue = useRepoStore((s) => s.rebaseContinue);
+  const abortConflict = useRepoStore((s) => s.abortConflict);
+  const continueConflict = useRepoStore((s) => s.continueConflict);
   const refreshStatus = useRepoStore((s) => s.refreshStatus);
   const [hasConflicts, setHasConflicts] = useState(false);
 
+  // 只在 status 长度变化或有冲突标记时检查冲突（避免每 300ms 调用）
+  const statusSignature = useMemo(
+    () => repoInfo?.status.map((f) => `${f.path}:${f.status}:${f.staged}`).join(',') ?? '',
+    [repoInfo?.status]
+  );
+
   useEffect(() => {
     if (!repoInfo) return;
+    // 快速检测：如果没有任何 UU/AA/DD 等冲突标记，直接跳过 IPC 调用
+    const hasConflictMarkers = repoInfo.status.some((f) => f.status === 'UU' || f.status === 'AA' || f.status === 'DD'
+      || f.status === 'AU' || f.status === 'UA' || f.status === 'UD' || f.status === 'DU');
+    if (!hasConflictMarkers) {
+      setHasConflicts(false);
+      return;
+    }
     invoke<{ hasConflicts: boolean }>('check_conflicts', {
       repoPath: repoInfo.path,
-    }).then((r) => setHasConflicts(r.hasConflicts)).catch(() => setHasConflicts(false));
-  }, [repoInfo]);
+    }).then((r) => setHasConflicts(r.hasConflicts)).catch((e) => {
+      console.warn('检查冲突状态失败:', e);
+      setHasConflicts(false);
+    });
+  }, [statusSignature]);
 
   const files = useMemo(() => repoInfo?.status ?? [], [repoInfo]);
   const stagedFiles = useMemo(() => files.filter((f) => f.staged), [files]);
   const unstagedFiles = useMemo(() => files.filter((f) => !f.staged), [files]);
 
+  // 虚拟滚动阈值：超过 50 个文件时启用
+  const VIRTUAL_THRESHOLD = 50;
+  const ITEM_HEIGHT = 40;
+
   // 切换文件的暂存状态：使用 path 直接操作 store
-  const handleToggleFile = (path: string) => {
+  const handleToggleFile = useCallback((path: string) => {
     const file = files.find((f) => f.path === path);
     if (!file) return;
     if (file.staged) {
@@ -130,7 +154,7 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
     } else {
       stageFile(path);
     }
-  };
+  }, [files, stageFile, unstageFile]);
 
   if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spin /></div>;
   if (!repoInfo) return <Empty description="未打开仓库" />;
@@ -158,23 +182,42 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minHeight: 0 }}>
           {hasConflicts && (
             <div style={{
-              padding: '8px 10px', borderRadius: 8,
-              background: 'rgba(255,77,79,0.08)', border: '1px solid rgba(255,77,79,0.2)',
-              display: 'flex', alignItems: 'center', gap: 8, fontSize: 12,
+              padding: '12px', borderRadius: 10,
+              background: 'linear-gradient(135deg, rgba(255,77,79,0.06) 0%, rgba(255,120,77,0.04) 100%)',
+              border: '1px solid rgba(255,77,79,0.15)',
             }}>
-              <span style={{ color: '#ff4d4f', fontWeight: 600 }}>⚠ 合并冲突</span>
-              <span style={{ flex: 1, color: '#999' }}>编辑文件 → 保存 → 暂存 → 继续</span>
-              <Button size="small" type="link" danger style={{ fontSize: 11, padding: 0 }}
-                onClick={() => abortRebase().then(refreshStatus)}>放弃</Button>
-              <Button size="small" type="primary" style={{ fontSize: 11 }}
-                onClick={() => rebaseContinue().then(refreshStatus)}>继续</Button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <WarningOutlined style={{ color: '#ff4d4f', fontSize: 16 }} />
+                <span style={{ color: '#ff4d4f', fontWeight: 600, fontSize: 13 }}>合并冲突</span>
+                <span style={{ flex: 1 }} />
+                <Button size="small" danger icon={<StopOutlined />}
+                  onClick={() => abortConflict().catch((e) => console.warn('放弃合并失败:', e))}
+                  style={{ fontSize: 11 }}>
+                  放弃合并
+                </Button>
+                <Button size="small" type="primary" icon={<PlayCircleOutlined />}
+                  onClick={() => continueConflict().catch((e) => console.warn('继续合并失败:', e))}
+                  style={{ fontSize: 11 }}>
+                  解决完成
+                </Button>
+              </div>
+              <Steps
+                size="small"
+                current={-1}
+                items={[
+                  { title: <span style={{ fontSize: 11 }}><EditOutlined /> 编辑</span> },
+                  { title: <span style={{ fontSize: 11 }}><SaveOutlined /> 保存</span> },
+                  { title: <span style={{ fontSize: 11 }}><CheckCircleOutlined /> 暂存</span> },
+                  { title: <span style={{ fontSize: 11 }}><PlayCircleOutlined /> 继续</span> },
+                ]}
+              />
             </div>
           )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, overflow: 'auto' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, overflow: 'hidden' }}>
             {/* 暂存的更改 */}
             {stagedFiles.length > 0 && (
-              <div>
+              <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
                 }}>
@@ -192,21 +235,41 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
                     全部取消
                   </Button>
                 </div>
-                {stagedFiles.map((f) => (
-                  <FileItem
-                    key={f.path}
-                    file={f}
-                    hasConflicts={hasConflicts}
-                    onSelect={onSelectFile || (() => {})}
-                    onToggle={handleToggleFile}
-                  />
-                ))}
+                {stagedFiles.length > VIRTUAL_THRESHOLD ? (
+                  <FixedSizeList
+                    height={Math.min(stagedFiles.length * ITEM_HEIGHT, 300)}
+                    itemCount={stagedFiles.length}
+                    itemSize={ITEM_HEIGHT}
+                    width="100%"
+                  >
+                    {({ index, style }) => (
+                      <div style={style}>
+                        <FileItem
+                          file={stagedFiles[index]}
+                          hasConflicts={hasConflicts}
+                          onSelect={onSelectFile || (() => {})}
+                          onToggle={handleToggleFile}
+                        />
+                      </div>
+                    )}
+                  </FixedSizeList>
+                ) : (
+                  stagedFiles.map((f) => (
+                    <FileItem
+                      key={f.path}
+                      file={f}
+                      hasConflicts={hasConflicts}
+                      onSelect={onSelectFile || (() => {})}
+                      onToggle={handleToggleFile}
+                    />
+                  ))
+                )}
               </div>
             )}
 
             {/* 未暂存的更改 */}
             {unstagedFiles.length > 0 && (
-              <div>
+              <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
                 }}>
@@ -224,15 +287,35 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
                     全部暂存
                   </Button>
                 </div>
-                {unstagedFiles.map((f) => (
-                  <FileItem
-                    key={f.path}
-                    file={f}
-                    hasConflicts={hasConflicts}
-                    onSelect={onSelectFile || (() => {})}
-                    onToggle={handleToggleFile}
-                  />
-                ))}
+                {unstagedFiles.length > VIRTUAL_THRESHOLD ? (
+                  <FixedSizeList
+                    height={Math.min(unstagedFiles.length * ITEM_HEIGHT, 300)}
+                    itemCount={unstagedFiles.length}
+                    itemSize={ITEM_HEIGHT}
+                    width="100%"
+                  >
+                    {({ index, style }) => (
+                      <div style={style}>
+                        <FileItem
+                          file={unstagedFiles[index]}
+                          hasConflicts={hasConflicts}
+                          onSelect={onSelectFile || (() => {})}
+                          onToggle={handleToggleFile}
+                        />
+                      </div>
+                    )}
+                  </FixedSizeList>
+                ) : (
+                  unstagedFiles.map((f) => (
+                    <FileItem
+                      key={f.path}
+                      file={f}
+                      hasConflicts={hasConflicts}
+                      onSelect={onSelectFile || (() => {})}
+                      onToggle={handleToggleFile}
+                    />
+                  ))
+                )}
               </div>
             )}
           </div>

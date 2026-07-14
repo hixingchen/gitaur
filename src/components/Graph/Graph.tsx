@@ -127,7 +127,7 @@ export function Graph({ entries }: GraphProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const logEntries = useRepoStore((s) => s.logEntries);
   const logLoading = useRepoStore((s) => s.logLoading);
-  const repoInfo = useRepoStore((s) => s.repoInfo);
+  const hasRepo = useRepoStore((s) => !!s.repoInfo);
   const selectedCommit = useRepoStore((s) => s.selectedCommit);
   const setSelectedCommit = useRepoStore((s) => s.setSelectedCommit);
 
@@ -320,7 +320,7 @@ export function Graph({ entries }: GraphProps = {}) {
     };
   }, [draw]);
 
-  if (!repoInfo) return <Empty description="未打开仓库" />;
+  if (!hasRepo) return <Empty description="未打开仓库" />;
   if (logLoading && logEntries.length === 0) return <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>;
   if (commits.length === 0) return <Empty description={entries ? '无匹配的提交' : '暂无提交记录'} />;
 

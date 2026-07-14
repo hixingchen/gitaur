@@ -54,7 +54,7 @@ export function MRPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Project Selector */}
-      <ProjectSelector onSelect={() => {}} />
+      <ProjectSelector />
 
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0 }}>

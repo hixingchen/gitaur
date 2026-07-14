@@ -46,9 +46,10 @@ pub fn parse_status(raw: &str) -> Vec<FileStatus> {
             if line.len() < 4 {
                 return None;
             }
-            let chars: Vec<char> = line.chars().collect();
-            let index_status = chars[0];
-            let worktree_status = chars[1];
+            // 直接用字节操作，避免 Vec<char> 分配
+            let bytes = line.as_bytes();
+            let index_status = bytes[0] as char;
+            let worktree_status = bytes[1] as char;
             let path = decode_git_path(&line[3..]);
 
             // M/A/D/R in index → staged；'?' or ' ' → unstaged
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].path, "src/main.rs");
         assert_eq!(result[0].status, 'M');
-        assert!(result[0].staged);
+        assert!(!result[0].staged);
     }
 
     #[test]

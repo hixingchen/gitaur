@@ -21,13 +21,21 @@ export function Titlebar() {
     refreshMaximized();
 
     let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+
     appWindow.onResized(() => {
       refreshMaximized();
     }).then((fn) => {
-      unlistenFn = fn;
+      if (cancelled) {
+        // 组件已卸载，立即取消监听
+        fn();
+      } else {
+        unlistenFn = fn;
+      }
     });
 
     return () => {
+      cancelled = true;
       unlistenFn?.();
     };
   }, [refreshMaximized]);

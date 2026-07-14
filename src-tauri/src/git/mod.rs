@@ -1,11 +1,8 @@
-pub mod error;
 pub mod executor;
 pub mod parser;
 
-use serde::Serialize;
-
 /// Unified output from git command execution
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct GitOutput {
     pub stdout: String,
     pub stderr: String,

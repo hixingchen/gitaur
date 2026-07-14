@@ -9,17 +9,17 @@ export interface GitLabMergeRequest {
   id: number;
   iid: number;
   project_id: number;
-  title: string;
+  title: string | null;
   description?: string | null;
-  state: string;
-  source_branch: string;
-  target_branch: string;
+  state: string | null;
+  source_branch: string | null;
+  target_branch: string | null;
   author?: GitLabUser | null;
   assignees?: GitLabUser[] | null;
   reviewers?: GitLabUser[] | null;
-  web_url: string;
-  created_at: string;
-  updated_at: string;
+  web_url: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   merged_at?: string | null;
   labels?: string[] | null;
   work_in_progress?: boolean;
@@ -33,9 +33,9 @@ export interface GitLabMergeRequest {
 
 export interface GitLabUser {
   id: number;
-  username: string;
-  name: string;
-  avatar_url: string;
+  username?: string | null;
+  name?: string | null;
+  avatar_url?: string | null;
 }
 
 export interface GitLabProject {
@@ -58,7 +58,7 @@ export interface GitLabNote {
   updated_at: string;
   system: boolean;
   resolvable: boolean;
-  resolved: boolean;
+  resolved: boolean | null;
 }
 
 export interface CreateMergeRequestParams {
@@ -71,13 +71,25 @@ export interface CreateMergeRequestParams {
   labels?: string[];
   remove_source_branch?: boolean;
   squash?: boolean;
+  merge_when_pipeline_succeeds?: boolean;
+}
+
+export interface UpdateMergeRequestParams {
+  title?: string;
+  description?: string;
+  target_branch?: string;
+  assignee_ids?: number[];
+  reviewer_ids?: number[];
+  labels?: string[];
+  remove_source_branch?: boolean;
+  state_event?: 'close' | 'reopen';
 }
 
 export class GitLabService {
   private config: GitLabConfig;
 
   constructor(config: GitLabConfig) {
-    this.config = config;
+    this.config = { ...config, url: config.url.replace(/\/+$/, '') };
   }
 
   // ========== Projects ==========
@@ -129,7 +141,7 @@ export class GitLabService {
   async updateMergeRequest(
     projectId: string,
     mrIid: number,
-    params: Partial<CreateMergeRequestParams>
+    params: UpdateMergeRequestParams
   ): Promise<GitLabMergeRequest> {
     const url = `${this.config.url}/api/v4/projects/${encodeURIComponent(projectId)}/merge_requests/${mrIid}`;
     return invoke<GitLabMergeRequest>('gitlab_request', {
@@ -156,12 +168,16 @@ export class GitLabService {
   }
 
   async closeMergeRequest(projectId: string, mrIid: number): Promise<GitLabMergeRequest> {
-    return this.updateMergeRequest(projectId, mrIid, { state_event: 'close' } as any);
+    return this.updateMergeRequest(projectId, mrIid, { state_event: 'close' });
+  }
+
+  async reopenMergeRequest(projectId: string, mrIid: number): Promise<GitLabMergeRequest> {
+    return this.updateMergeRequest(projectId, mrIid, { state_event: 'reopen' });
   }
 
   // ========== Approvals ==========
 
-  async approveMergeRequest(projectId: string, mrIid: number): Promise<any> {
+  async approveMergeRequest(projectId: string, mrIid: number): Promise<Record<string, unknown>> {
     return invoke('gitlab_approve_merge_request', {
       baseUrl: this.config.url,
       token: this.config.token,

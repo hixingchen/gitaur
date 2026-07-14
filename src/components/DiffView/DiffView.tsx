@@ -1,11 +1,13 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import { Spin, Empty, Typography, Button, Segmented, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { useViewStore } from '../../stores/viewStore';
-import { DiffEditor } from '@monaco-editor/react';
-import Editor from '@monaco-editor/react';
 import { invoke } from '@tauri-apps/api/core';
+
+// Monaco Editor 懒加载 — 约 3MB，仅在需要时加载
+const DiffEditor = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })));
+const Editor = lazy(() => import('@monaco-editor/react'));
 
 const { Text } = Typography;
 
@@ -58,7 +60,7 @@ export function DiffView() {
   const [editContent, setEditContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [sideBySide, setSideBySide] = useState(false);
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null);
 
   // 切换文件时清理旧数据，避免闪烁
   useEffect(() => {
@@ -68,14 +70,17 @@ export function DiffView() {
     setLoading(true);
 
     (async () => {
+      let headErr: string | null = null;
+      let workErr: string | null = null;
+
       try {
         const head = await invoke<string>('get_file_content', {
           repoPath: repoInfo.path, filePath: selectedFile, revision: 'HEAD',
         });
         if (cancelled) return;
         setHeadText(head);
-      } catch {
-        if (!cancelled) setHeadText('');
+      } catch (e) {
+        if (!cancelled) { setHeadText(''); headErr = String(e); }
       }
       try {
         const work = await invoke<string>('read_working_file', {
@@ -85,10 +90,16 @@ export function DiffView() {
         setWorkText(work);
         setEditMode(work.includes('<<<<<<<') && work.includes('>>>>>>>'));
         if (work.includes('<<<<<<<')) setEditContent(work);
-      } catch {
-        if (!cancelled) setWorkText('');
+      } catch (e) {
+        if (!cancelled) { setWorkText(''); workErr = String(e); }
       }
-      if (!cancelled) setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+        // 新文件（HEAD 不存在）是正常情况，只在工作区也读取失败时报错
+        if (headErr && workErr) {
+          message.error(`文件读取失败: ${workErr}`);
+        }
+      }
     })();
 
     // 清理旧 Monaco 模型
@@ -146,8 +157,10 @@ export function DiffView() {
     );
   }
 
-  const fn = selectedFile.split('/').pop() || selectedFile;
-  const fd = selectedFile.includes('/') ? selectedFile.substring(0, selectedFile.lastIndexOf('/')) : '';
+  // 跨平台路径分割：同时处理 / 和 \
+  const fn = selectedFile.split(/[/\\]/).pop() || selectedFile;
+  const lastSep = Math.max(selectedFile.lastIndexOf('/'), selectedFile.lastIndexOf('\\'));
+  const fd = lastSep > 0 ? selectedFile.substring(0, lastSep) : '';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -194,19 +207,21 @@ export function DiffView() {
           border: '1px solid var(--ant-color-border-secondary, #333)',
           borderRadius: '0 0 8px 8px', overflow: 'hidden',
         }}>
-          <Editor
-            height="100%"
-            language={detectLang(selectedFile)}
-            value={editContent}
-            onChange={(v) => setEditContent(v || '')}
-            theme="vs-dark"
-            onMount={(editor) => { editorRef.current = editor; }}
-            options={{
-              ...baseOptions,
-              readOnly: false,
-              wordWrap: 'on',
-            }}
-          />
+          <Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
+            <Editor
+              height="100%"
+              language={detectLang(selectedFile)}
+              value={editContent}
+              onChange={(v) => setEditContent(v || '')}
+              theme="vs-dark"
+              onMount={(editor) => { editorRef.current = editor; }}
+              options={{
+                ...baseOptions,
+                readOnly: false,
+                wordWrap: 'on',
+              }}
+            />
+          </Suspense>
         </div>
       ) : (
         <div style={{
@@ -214,22 +229,24 @@ export function DiffView() {
           border: '1px solid var(--ant-color-border-secondary, #333)',
           borderRadius: '0 0 8px 8px', overflow: 'hidden',
         }}>
-          <DiffEditor
-            height="100%"
-            language={detectLang(selectedFile)}
-            original={headText}
-            modified={workText}
-            theme="vs-dark"
-            keepCurrentOriginalModel={false}
-            keepCurrentModifiedModel={false}
-            options={{
-              ...baseOptions,
-              renderSideBySide: sideBySide,
-              ignoreTrimWhitespace: false,
-              renderIndicators: true,
-              diffWordWrap: 'on',
-            }}
-          />
+          <Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
+            <DiffEditor
+              height="100%"
+              language={detectLang(selectedFile)}
+              original={headText}
+              modified={workText}
+              theme="vs-dark"
+              keepCurrentOriginalModel={false}
+              keepCurrentModifiedModel={false}
+              options={{
+                ...baseOptions,
+                renderSideBySide: sideBySide,
+                ignoreTrimWhitespace: false,
+                renderIndicators: true,
+                diffWordWrap: 'on',
+              }}
+            />
+          </Suspense>
         </div>
       )}
     </div>

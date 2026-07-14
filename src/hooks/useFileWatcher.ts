@@ -21,10 +21,11 @@ export function useFileWatcher(
     if (!enabled) return;
 
     let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
 
     const setup = async () => {
       try {
-        unlisten = await listen<string[]>('file-changed', (event) => {
+        const fn = await listen<string[]>('file-changed', (event) => {
           // 防抖：300ms 内多次触发只执行最后一次
           if (timerRef.current) {
             clearTimeout(timerRef.current);
@@ -33,6 +34,12 @@ export function useFileWatcher(
             callbackRef.current(event.payload);
           }, 300);
         });
+        if (cancelled) {
+          // 组件已卸载，立即取消监听
+          fn();
+        } else {
+          unlisten = fn;
+        }
       } catch (e) {
         console.debug('File watcher event listener setup:', e);
       }
@@ -41,6 +48,7 @@ export function useFileWatcher(
     setup();
 
     return () => {
+      cancelled = true;
       if (unlisten) {
         unlisten();
       }

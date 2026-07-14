@@ -59,10 +59,10 @@ function FileChangeItem({ change, selected, onSelect }: {
   onSelect: () => void;
 }) {
   const color = STATUS_COLOR[change.status] ?? '#8c8c8c';
-  const fileName = change.path.split('/').pop() || change.path;
-  const dir = change.path.includes('/')
-    ? change.path.substring(0, change.path.lastIndexOf('/'))
-    : '';
+  // 跨平台路径分割：同时处理 / 和 \
+  const fileName = change.path.split(/[/\\]/).pop() || change.path;
+  const lastSep = Math.max(change.path.lastIndexOf('/'), change.path.lastIndexOf('\\'));
+  const dir = lastSep > 0 ? change.path.substring(0, lastSep) : '';
   const isBinary = change.additions < 0;
 
   return (

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Input, Select, Button, Space, Typography, Tooltip } from 'antd';
 import { SearchOutlined, ReloadOutlined, VerticalAlignBottomOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
@@ -8,6 +8,7 @@ import { CommitDetailPanel } from './CommitDetailPanel';
 const { Text } = Typography;
 
 const PAGE_SIZE = 50;
+const MAX_LOG_COUNT = 1000;
 
 export function HistoryView() {
   const logEntries = useRepoStore((s) => s.logEntries);
@@ -18,7 +19,16 @@ export function HistoryView() {
   const selectedCommit = useRepoStore((s) => s.selectedCommit);
 
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [count, setCount] = useState(PAGE_SIZE);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 防抖：300ms 内多次输入只执行最后一次
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search]);
 
   // 本地分支列表（远程分支不作为过滤来源）
   const branchOptions = useMemo(() => {
@@ -31,7 +41,7 @@ export function HistoryView() {
 
   // 前端搜索过滤（消息 / 作者 / hash）
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     if (!q) return logEntries;
     return logEntries.filter(
       (e) =>
@@ -39,7 +49,7 @@ export function HistoryView() {
         e.author.toLowerCase().includes(q) ||
         e.hash.toLowerCase().includes(q),
     );
-  }, [logEntries, search]);
+  }, [logEntries, debouncedSearch]);
 
   const handleBranchChange = (value: string) => {
     const branch = value === '__all__' ? null : value;
@@ -48,7 +58,7 @@ export function HistoryView() {
   };
 
   const handleLoadMore = () => {
-    const next = count + PAGE_SIZE;
+    const next = Math.min(count + PAGE_SIZE, MAX_LOG_COUNT);
     setCount(next);
     loadLog(next, logBranch);
   };
@@ -92,7 +102,7 @@ export function HistoryView() {
                 size="small"
                 icon={<VerticalAlignBottomOutlined />}
                 onClick={handleLoadMore}
-                disabled={reachedEnd || logLoading}
+                disabled={reachedEnd || logLoading || count >= MAX_LOG_COUNT}
                 loading={logLoading}
               >
                 更多

@@ -28,7 +28,7 @@ export function defaultAlias(path: string): string {
 
 /** 获取或创建持久化 store 实例 — 复用避免重复加载 */
 async function ensureStore(): Promise<Store> {
-  return load('repos.json', { autoSave: true, defaults: {} });
+  return load('repos.json', { autoSave: false, defaults: {} });
 }
 
 async function persist(repos: SavedRepo[], lastRepoPath: string | null, store?: Store | null): Promise<Store> {
@@ -50,9 +50,9 @@ export const useRepoManagerStore = create<RepoManagerState>((set, get) => ({
       const store = await ensureStore();
       const saved = await store.get<{ repos: SavedRepo[]; lastRepoPath?: string }>('data');
       if (saved?.repos) {
-        const fixed = saved.repos.map((r) => ({
+        const fixed = saved.repos.map((r: SavedRepo & { name?: string }) => ({
           ...r,
-          alias: (r as any).name || r.alias || defaultAlias(r.path),
+          alias: r.name || r.alias || defaultAlias(r.path),
         }));
         set({ repos: fixed, lastRepoPath: saved.lastRepoPath || null, loading: false, _store: store });
       } else {
@@ -124,6 +124,15 @@ export const useRepoManagerStore = create<RepoManagerState>((set, get) => ({
   },
 
   clearLastRepo: async () => {
+    const { repos, _store } = get();
     set({ lastRepoPath: null });
+    try {
+      const s = _store || await ensureStore();
+      await s.set('data', { repos, lastRepoPath: null });
+      await s.save();
+      set({ _store: s });
+    } catch (e) {
+      console.error('Failed to clear last repo:', e);
+    }
   },
 }));

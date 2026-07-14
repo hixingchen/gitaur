@@ -12,10 +12,9 @@ import {
   RocketOutlined,
 } from '@ant-design/icons';
 import { Titlebar } from './Titlebar';
+import { type NavKey } from '../../stores/viewStore';
 
 const { Sider, Content, Header } = Layout;
-
-export type NavKey = 'home' | 'repos' | 'workspace' | 'branches' | 'history' | 'diff' | 'settings' | 'mergerequests' | 'pipeline';
 
 interface AppLayoutProps {
   children: React.ReactNode;

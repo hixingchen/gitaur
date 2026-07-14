@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   Button, Steps, Tag, Space, Input, Modal, Form, Switch, Select, Divider,
   Typography, Tooltip, theme, message,
@@ -9,13 +9,14 @@ import {
   CloseCircleOutlined, LoadingOutlined,
   BranchesOutlined, CodeOutlined, CloudUploadOutlined,
   PullRequestOutlined, RocketOutlined, ClearOutlined,
-  EditOutlined, StepForwardOutlined, SwapOutlined,
+  EditOutlined, SwapOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus } from '../../stores/pipelineStore';
 import { useRepoStore } from '../../stores/repoStore';
 import { useViewStore } from '../../stores/viewStore';
 import { useRepoManagerStore } from '../../stores/repoManagerStore';
 import { useBranchTagStore } from '../../stores/branchTagStore';
+import { useMrPolling } from '../../hooks/useMrPolling';
 import { FileTree, type PanelTab } from '../FileTree/FileTree';
 import { DiffView } from '../DiffView/DiffView';
 
@@ -56,6 +57,46 @@ function getStepIcon(key: string) {
   }
 }
 
+// ====== 操作状态枚举 ======
+type ActionState =
+  | 'pending' | 'developing' | 'sync_error_uncommitted' | 'sync_error_conflict'
+  | 'sync_done' | 'push_done' | 'waiting_merge_normal' | 'waiting_merge_conflict'
+  | 'waiting_merge_closed' | 'error_commit' | 'error_push' | 'error_mr'
+  | 'running' | 'finished' | 'delete_only';
+
+function getActionState(task: PipelineTask): ActionState {
+  const developStep = task.steps.find((s) => s.key === 'develop');
+  const commitStep = task.steps.find((s) => s.key === 'commit');
+  const syncStep = task.steps.find((s) => s.key === 'sync');
+  const pushStep = task.steps.find((s) => s.key === 'push');
+  const mrStep = task.steps.find((s) => s.key === 'mr');
+  const waitStep = task.steps.find((s) => s.key === 'wait');
+  const hasError = task.steps.some((s) => s.status === 'error');
+  const isRunning = task.status === 'running';
+  const isFinished = task.status === 'success' || task.status === 'cancelled';
+
+  if (task.status === 'pending') return 'pending';
+  if (developStep?.status === 'process' || (developStep?.status === 'finish' && syncStep?.status === 'wait')) return 'developing';
+  if (syncStep?.status === 'error') return (syncStep.error || '').includes('未提交的更改') ? 'sync_error_uncommitted' : 'sync_error_conflict';
+  if (syncStep?.status === 'finish' && (pushStep?.status === 'wait' || pushStep?.status === 'process')) return 'sync_done';
+  if (pushStep?.status === 'finish' && (mrStep?.status === 'wait' || mrStep?.status === 'process')) return 'push_done';
+  if (isRunning && waitStep?.status !== 'process') return 'running';
+  if (waitStep?.status === 'process') {
+    const ps = task.mrPollStatus;
+    if (ps === 'conflict' || ps === 'pipeline_failed' || ps === 'not_approved') return 'waiting_merge_conflict';
+    if (ps === 'closed') return 'waiting_merge_closed';
+    return 'waiting_merge_normal';
+  }
+  if (hasError) {
+    if (commitStep?.status === 'error') return 'error_commit';
+    if (pushStep?.status === 'error') return 'error_push';
+    if (mrStep?.status === 'error') return 'error_mr';
+    return 'delete_only';
+  }
+  if (isFinished) return 'finished';
+  return 'delete_only';
+}
+
 // ====== 流水线步骤条 ======
 interface PipelineBarProps {
   task: PipelineTask;
@@ -68,11 +109,13 @@ function PipelineBar({ task }: PipelineBarProps) {
   const syncRemote = usePipelineStore((s) => s.syncRemote);
   const pushRemote = usePipelineStore((s) => s.pushRemote);
   const createMR = usePipelineStore((s) => s.createMR);
-  const checkMergeStatus = usePipelineStore((s) => s.checkMergeStatus);
   const deleteTask = usePipelineStore((s) => s.deleteTask);
   const abortRebase = usePipelineStore((s) => s.abortRebase);
   const rebaseContinue = usePipelineStore((s) => s.rebaseContinue);
   const closeMR = usePipelineStore((s) => s.closeMR);
+  const reopenMR = usePipelineStore((s) => s.reopenMR);
+  const resumeDevelopment = usePipelineStore((s) => s.resumeDevelopment);
+  const resumeFromConflict = usePipelineStore((s) => s.resumeFromConflict);
   const loading = usePipelineStore((s) => s.loading);
 
   // 确认弹窗状态
@@ -84,224 +127,158 @@ function PipelineBar({ task }: PipelineBarProps) {
   const [commitMessage, setCommitMessage] = useState('');
 
   const hasError = task.steps.some((s) => s.status === 'error');
-  const isRunning = task.status === 'running';
-  const isFinished = task.status === 'success' || task.status === 'cancelled';
-
-  // 找到当前应该执行的步骤
-  const developStep = task.steps.find((s) => s.key === 'develop');
-  const commitStep = task.steps.find((s) => s.key === 'commit');
-  const syncStep = task.steps.find((s) => s.key === 'sync');
-  const pushStep = task.steps.find((s) => s.key === 'push');
-  const mrStep = task.steps.find((s) => s.key === 'mr');
-  const waitStep = task.steps.find((s) => s.key === 'wait');
-
   const currentStepIndex = task.currentStep >= 0 ? task.currentStep : 0;
+  const waitStep = task.steps.find((s) => s.key === 'wait');
+  const actionState = getActionState(task);
+
+  const DeleteBtn = () => (
+    <Button danger icon={<DeleteOutlined />} size="small"
+      onClick={() => void setDeleteConfirm(true)}>删除任务</Button>
+  );
 
   const renderActions = () => {
-    if (task.status === 'pending') {
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<PlayCircleOutlined />} size="small"
-            onClick={() => startTask(task.id)} loading={loading}>
-            开始
-          </Button>
-          <Button danger icon={<DeleteOutlined />} size="small"
-            onClick={() => void setDeleteConfirm(true)}>
-            删除任务
-          </Button>
-        </Space>
-      );
-    }
-
-    // 开发步骤或已提交但未同步：显示"提交代码"和"同步远程"
-    if (developStep?.status === 'process' || (developStep?.status === 'finish' && syncStep?.status === 'wait')) {
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<EditOutlined />} size="small"
-            onClick={() => setCommitModalOpen(true)}>
-            提交代码
-          </Button>
-          <Button icon={<ReloadOutlined />} size="small"
-            onClick={() => syncRemote(task.id)} loading={loading}>
-            同步远程
-          </Button>
-          <Button danger icon={<DeleteOutlined />} size="small"
-            onClick={() => setDeleteConfirm(true)}>
-            删除任务
-          </Button>
-        </Space>
-      );
-    }
-
-    // 同步步骤出错：根据错误类型显示不同按钮
-    if (syncStep?.status === 'error') {
-      const errorMsg = syncStep.error || '';
-      // 未提交的更改：显示提交按钮
-      if (errorMsg.includes('未提交的更改')) {
+    switch (actionState) {
+      case 'pending':
+        return (
+          <Space size={6}>
+            <Button type="primary" icon={<PlayCircleOutlined />} size="small"
+              onClick={() => startTask(task.id)} loading={loading}>开始</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'developing':
         return (
           <Space size={6}>
             <Button type="primary" icon={<EditOutlined />} size="small"
-              onClick={() => setCommitModalOpen(true)}>
-              提交代码
-            </Button>
-            <Button danger icon={<DeleteOutlined />} size="small"
-              onClick={() => void setDeleteConfirm(true)}>
-              删除任务
-            </Button>
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <Button icon={<ReloadOutlined />} size="small"
+              onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
+            <DeleteBtn />
           </Space>
         );
-      }
-      // 冲突：显示继续同步和中止
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<ReloadOutlined />} size="small"
-            onClick={() => rebaseContinue(task.id)} loading={loading}>
-            继续同步
-          </Button>
-          <Button danger icon={<StopOutlined />} size="small"
-            onClick={() => void setAbortRebaseConfirm(true)}>
-            中止同步
-          </Button>
-        </Space>
-      );
-    }
-
-    // 同步完成，等待推送：显示"推送到远程"
-    if (syncStep?.status === 'finish' && (pushStep?.status === 'wait' || pushStep?.status === 'process')) {
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<CloudUploadOutlined />} size="small"
-            onClick={() => pushRemote(task.id)} loading={loading}>
-            推送到远程
-          </Button>
-          <Button danger icon={<DeleteOutlined />} size="small"
-            onClick={() => void setDeleteConfirm(true)}>
-            删除任务
-          </Button>
-        </Space>
-      );
-    }
-
-    // 推送完成，等待创建MR：显示"创建MR"
-    if (pushStep?.status === 'finish' && (mrStep?.status === 'wait' || mrStep?.status === 'process')) {
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<PullRequestOutlined />} size="small"
-            onClick={() => createMR(task.id)} loading={loading}>
-            创建MR
-          </Button>
-          <Button danger icon={<DeleteOutlined />} size="small"
-            onClick={() => void setDeleteConfirm(true)}>
-            删除任务
-          </Button>
-        </Space>
-      );
-    }
-
-    // 运行中（等待合并时也是 running 状态，但优先显示等待合并按钮）
-    if (isRunning && waitStep?.status !== 'process') {
-      return (
-        <Button danger icon={<DeleteOutlined />} size="small"
-          onClick={() => void setDeleteConfirm(true)}>
-          删除任务
-        </Button>
-      );
-    }
-
-    // 等待合并：显示"检查合并"和"关闭MR"
-    if (waitStep?.status === 'process') {
-      return (
-        <Space size={6}>
-          <Button type="primary" icon={<StepForwardOutlined />} size="small"
-            onClick={() => checkMergeStatus(task.id)} loading={loading}>
-            检查合并
-          </Button>
-          {task.mrUrl && (
-            <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
-              <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
-            </a>
-          )}
-          <Button danger icon={<CloseCircleOutlined />} size="small"
-            onClick={() => void setCloseMRConfirm(true)}>
-            关闭MR
-          </Button>
-          <Button danger icon={<DeleteOutlined />} size="small"
-            onClick={() => void setDeleteConfirm(true)}>
-            删除任务
-          </Button>
-        </Space>
-      );
-    }
-
-    // 有错误 - 根据失败步骤显示具体操作
-    if (hasError) {
-      // 提交失败（如 nothing to commit）
-      if (commitStep?.status === 'error') {
+      case 'sync_error_uncommitted':
         return (
           <Space size={6}>
             <Button type="primary" icon={<EditOutlined />} size="small"
-              onClick={() => commitCode(task.id)} loading={loading}>
-              重新提交
-            </Button>
-            <Button danger icon={<DeleteOutlined />} size="small"
-              onClick={() => void setDeleteConfirm(true)}>
-              删除任务
-            </Button>
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'sync_error_conflict':
+        return (
+          <Space size={6}>
+            <Button type="primary" icon={<ReloadOutlined />} size="small"
+              onClick={() => syncRemote(task.id)} loading={loading}>继续同步</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'sync_done':
+        return (
+          <Space size={6}>
+            <Button icon={<EditOutlined />} size="small"
+              onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+            <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+              onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'push_done':
+        return (
+          <Space size={6}>
+            <Button icon={<EditOutlined />} size="small"
+              onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+            <Button type="primary" icon={<PullRequestOutlined />} size="small"
+              onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'running':
+        return <DeleteBtn />;
+      case 'waiting_merge_conflict': {
+        const ps = task.mrPollStatus;
+        const sm: Record<string, { l: string; c: string }> = {
+          conflict: { l: '⚠️ 冲突', c: 'error' },
+          pipeline_failed: { l: '❌ 流水线失败', c: 'warning' },
+          not_approved: { l: '⏳ 等待审批', c: 'processing' },
+        };
+        const { l, c } = sm[ps!] || { l: '未知', c: 'default' };
+        return (
+          <Space size={6}>
+            <Tag color={c}>{l}</Tag>
+            {ps === 'conflict' ? (
+              <Button type="primary" icon={<SyncOutlined />} size="small"
+                onClick={() => resumeFromConflict(task.id)} loading={loading}>同步远程</Button>
+            ) : (
+              <>
+                <Button type="primary" icon={<EditOutlined />} size="small"
+                  onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+                <Button icon={<CloudUploadOutlined />} size="small"
+                  onClick={() => pushRemote(task.id)} loading={loading}>推送</Button>
+              </>
+            )}
+            <Button icon={<PullRequestOutlined />} size="small"
+              onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+            <DeleteBtn />
           </Space>
         );
       }
-
-      // 推送失败
-      if (pushStep?.status === 'error') {
+      case 'waiting_merge_closed':
+        return (
+          <Space size={6}>
+            <Tag color="default">🚫 MR 已关闭</Tag>
+            <Button icon={<EditOutlined />} size="small"
+              onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+            <Button type="primary" icon={<PullRequestOutlined />} size="small"
+              onClick={() => reopenMR(task.id)} loading={loading}>重新打开MR</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'waiting_merge_normal': {
+        const ps = task.mrPollStatus;
+        const sl = ps === 'mergeable' ? '🟢 可合并' : '⏳ 等待合并';
+        return (
+          <Space size={6}>
+            <Tag color="processing">{sl}</Tag>
+            {task.mrUrl && (
+              <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
+                <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
+              </a>
+            )}
+            <Button danger icon={<CloseCircleOutlined />} size="small"
+              onClick={() => void setCloseMRConfirm(true)}>关闭MR</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      }
+      case 'error_commit':
+        return (
+          <Space size={6}>
+            <Button type="primary" icon={<EditOutlined />} size="small"
+              onClick={() => commitCode(task.id)} loading={loading}>重新提交</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      case 'error_push':
         return (
           <Space size={6}>
             <Button type="primary" icon={<CloudUploadOutlined />} size="small"
-              onClick={() => pushRemote(task.id)} loading={loading}>
-              重新推送
-            </Button>
-            <Button danger icon={<DeleteOutlined />} size="small"
-              onClick={() => void setDeleteConfirm(true)}>
-              删除任务
-            </Button>
+              onClick={() => pushRemote(task.id)} loading={loading}>重新推送</Button>
+            <DeleteBtn />
           </Space>
         );
-      }
-
-      // MR 失败
-      if (mrStep?.status === 'error') {
+      case 'error_mr':
         return (
           <Space size={6}>
             <Button type="primary" icon={<PullRequestOutlined />} size="small"
-              onClick={() => createMR(task.id)} loading={loading}>
-              重新创建MR
-            </Button>
-            <Button danger icon={<DeleteOutlined />} size="small"
-              onClick={() => void setDeleteConfirm(true)}>
-              删除任务
-            </Button>
+              onClick={() => createMR(task.id)} loading={loading}>重新创建MR</Button>
+            <DeleteBtn />
           </Space>
         );
-      }
-
-      // 其他错误（包括同步错误，已在上面处理）
-      return (
-        <Button danger icon={<DeleteOutlined />} size="small"
-          onClick={() => void setDeleteConfirm(true)}>
-          删除任务
-        </Button>
-      );
+      case 'finished':
+      case 'delete_only':
+      default:
+        return <DeleteBtn />;
     }
-
-    if (isFinished) {
-      return (
-        <Button danger icon={<DeleteOutlined />} size="small"
-          onClick={() => void setDeleteConfirm(true)}>
-          删除任务
-        </Button>
-      );
-    }
-
-    return null;
   };
 
   return (
@@ -449,6 +426,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
   const repoInfo = useRepoStore((s) => s.repoInfo);
   const repoPath = useRepoStore((s) => s.repoPath);
   const getTargetBranch = useBranchTagStore((s) => s.getTargetBranch);
+  const setSelectedFile = useViewStore((s) => s.setSelectedFile);
   const { token } = theme.useToken();
 
   // 实时监听表单值
@@ -481,7 +459,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
         branchName,
         syncStrategy: values.syncStrategy,
         mrSettings: {
-          enabled: values.mrEnabled,
+          enabled: true,
           squash: values.squash,
           deleteBranchAfterMerge: values.deleteBranch,
           autoMerge: values.autoMerge,
@@ -490,6 +468,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
       });
       if (!task) return;
       form.resetFields();
+      setSelectedFile(null);
       onClose();
       await startTask(task.id);
     } catch {
@@ -521,10 +500,9 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
       <Form form={form} layout="vertical" initialValues={{
         branchPrefix: 'feature',
         syncStrategy: 'rebase',
-        mrEnabled: true,
         squash: true,
         deleteBranch: true,
-        autoMerge: false,
+        autoMerge: true,
       }}>
         <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
           <Input placeholder="例：用户登录功能" />
@@ -535,6 +513,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
               <Select style={{ width: 120 }}>
                 <Select.Option value="feature">feature</Select.Option>
                 <Select.Option value="bugfix">bugfix</Select.Option>
+                <Select.Option value="hotfix">hotfix</Select.Option>
               </Select>
             </Form.Item>
             <Form.Item name="branchSuffix" noStyle>
@@ -545,6 +524,21 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
             完整分支名：{branchPrefix}/{branchSuffix || taskName || '...'}
           </div>
         </Form.Item>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13, marginBottom: 6, color: token.colorTextSecondary }}>目标分支</div>
+          {hasTargetBranch ? (
+            <Tag color="blue" icon={<BranchesOutlined />} style={{ margin: 0 }}>
+              🔗 {targetBranch}
+            </Tag>
+          ) : (
+            <Tooltip title="请先在分支界面将一个分支标记为「🔗 开发分支」">
+              <Tag color="warning" style={{ margin: 0, cursor: 'pointer' }}>⚠️ 未设置</Tag>
+            </Tooltip>
+          )}
+          <div style={{ fontSize: 12, color: token.colorTextTertiary, marginTop: 4 }}>
+            创建分支、同步远程、创建MR 都基于此分支
+          </div>
+        </div>
         <Form.Item name="syncStrategy" label="同步策略">
           <Select options={[
             { value: 'rebase', label: 'Rebase（变基，历史干净）' },
@@ -557,26 +551,6 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
           borderRadius: 8, border: `1px solid ${token.colorBorderSecondary}`,
         }}>
           <div style={{ fontWeight: 500, marginBottom: 12, fontSize: 13 }}>MR 设置</div>
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 13 }}>创建MR</span>
-            <Form.Item name="mrEnabled" valuePropName="checked" style={{ marginBottom: 0 }}>
-              <Switch />
-            </Form.Item>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, color: token.colorTextSecondary }}>目标分支</span>
-            {hasTargetBranch ? (
-              <Tag color="blue" icon={<BranchesOutlined />} style={{ margin: 0 }}>
-                🔗 {targetBranch}
-              </Tag>
-            ) : (
-              <Tooltip title="请先在分支界面将一个分支标记为「🔗 开发分支」">
-                <Tag color="warning" style={{ margin: 0, cursor: 'pointer' }}>⚠️ 未设置</Tag>
-              </Tooltip>
-            )}
-          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <span style={{ fontSize: 13 }}>Squash 提交</span>
@@ -598,6 +572,7 @@ function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
               <Switch />
             </Form.Item>
           </div>
+
         </div>
       </Form>
     </Modal>
@@ -674,13 +649,26 @@ function EmptyPage({ onNewTask }: { onNewTask: () => void }) {
 export function PipelinePanel() {
   const { token } = theme.useToken();
   const currentTask = usePipelineStore((s) => s.currentTask);
-  const tasksByRepo = usePipelineStore((s) => s.tasksByRepo);
+  const repoPath = useRepoStore((s) => s.repoPath);
   const setCurrentTask = usePipelineStore((s) => s.setCurrentTask);
   const deleteTaskFromStore = usePipelineStore((s) => s.deleteTask);
+  const pipelineError = usePipelineStore((s) => s.error);
+  const clearPipelineError = usePipelineStore((s) => s.clearError);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>('changes');
   const [panelWidth, setPanelWidth] = useState(220);
   const resizing = useRef(false);
+
+  // 使用 MR 轮询管理 hook — 自动管理轮询的开启和关闭
+  useMrPolling();
+
+  // 显示 pipelineStore 错误
+  useEffect(() => {
+    if (pipelineError) {
+      message.error(pipelineError);
+      clearPipelineError();
+    }
+  }, [pipelineError, clearPipelineError]);
 
   const repoPath = useRepoStore((s) => s.repoPath);
   const repoInfo = useRepoStore((s) => s.repoInfo);
@@ -693,22 +681,67 @@ export function PipelinePanel() {
     ? (savedRepos.find((r) => r.path === repoPath)?.alias || repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || repoPath)
     : '';
 
-  // 获取当前仓库的所有任务
-  const allTasks = repoPath ? (tasksByRepo[repoPath] || []) : [];
+  // 只订阅当前仓库的任务（避免其他仓库任务变化触发重渲染）
+  const currentRepoTasks = usePipelineStore((s) => repoPath ? (s.tasksByRepo[repoPath] || []) : []);
+  const allTasks = useMemo(
+    () => currentRepoTasks.filter((t) => t.status !== 'success' && t.status !== 'cancelled'),
+    [currentRepoTasks]
+  );
 
-  // 判断是否应该显示文件树（开发阶段或同步出错需要提交时）
+  // 当分支变化时，自动切换到对应的任务
+  const currentBranch = repoInfo?.currentBranch;
+  useEffect(() => {
+    if (!currentBranch || allTasks.length === 0) return;
+
+    // 如果当前任务有错误（冲突等），不要自动清除，让用户手动解决
+    const hasError = currentTask?.steps.some((s) => s.status === 'error');
+    if (hasError) return;
+
+    // 查找当前分支对应的运行中任务
+    const matchedTask = allTasks.find((t) =>
+      t.branchName === currentBranch && t.status !== 'success' && t.status !== 'cancelled'
+    );
+
+    if (matchedTask && currentTask?.id !== matchedTask.id) {
+      setCurrentTask(matchedTask.id);
+      setSelectedFile(null);
+    } else if (!matchedTask && currentTask) {
+      // 当前分支没有对应任务，检查当前任务是否还在当前分支
+      const currentTaskStillValid = allTasks.find((t) =>
+        t.id === currentTask.id && t.branchName === currentBranch
+      );
+      if (!currentTaskStillValid) {
+        setCurrentTask(null);
+        setSelectedFile(null);
+      }
+    }
+  }, [currentBranch]);
+
+  // 判断是否应该显示文件树
   const commitStep = currentTask?.steps.find((s) => s.key === 'commit');
   const syncStep = currentTask?.steps.find((s) => s.key === 'sync');
+  const waitStep = currentTask?.steps.find((s) => s.key === 'wait');
   const showFileTree = currentTask && (
     // 开发阶段（提交未完成）
     (commitStep && commitStep.status !== 'finish') ||
     // 已提交但未同步
     (commitStep?.status === 'finish' && syncStep?.status === 'wait') ||
-    // 同步出错且是未提交的更改（需要提交代码）
-    (syncStep?.status === 'error' && (syncStep.error || '').includes('未提交的更改'))
+    // 同步出错（冲突或未提交的更改）
+    (syncStep?.status === 'error' && (
+      (syncStep.error || '').includes('冲突') ||
+      (syncStep.error || '').includes('未提交的更改')
+    )) ||
+    // 等待合并时检测到冲突
+    (waitStep?.status === 'process' && currentTask.mrPollStatus === 'conflict')
   );
   // 任务是否已成功完成
   const isSuccess = currentTask?.status === 'success';
+
+  // 拖拽调整面板宽度 — 清理事件监听器
+  const cleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    return () => { cleanupRef.current?.(); };
+  }, []);
 
   const handlePanelResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -720,7 +753,17 @@ export function PipelinePanel() {
       const w = Math.max(180, Math.min(400, startW + (ev.clientX - startX)));
       setPanelWidth(w);
     };
-    const onUp = () => { resizing.current = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    const onUp = () => {
+      resizing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      cleanupRef.current = null;
+    };
+    cleanupRef.current = () => {
+      resizing.current = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, [panelWidth]);
@@ -773,19 +816,20 @@ export function PipelinePanel() {
                 return;
               }
 
-              // 切换到任务分支
-              if (task.status !== 'pending') {
+              // 先设置当前任务（无论 checkout 是否成功都能看到流程）
+              setCurrentTask(taskId);
+              setSelectedFile(null);
+
+              // 切换到任务分支（如果不在该分支上）
+              if (task.status !== 'pending' && currentBranch !== task.branchName) {
                 try {
                   await checkout(task.branchName);
                   await refreshStatusSilent();
                 } catch (e) {
-                  message.error(`切换分支失败: ${String(e)}`);
-                  return;
+                  // checkout 失败（可能有冲突），但任务已选中，用户可以在文件树中解决
+                  console.warn('切换分支失败:', e);
                 }
               }
-
-              setCurrentTask(taskId);
-              setSelectedFile(null); // 切换任务时重置选中的文件
             }}
             style={{ minWidth: 200 }}
             placeholder="选择任务"

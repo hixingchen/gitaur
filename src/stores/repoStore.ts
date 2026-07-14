@@ -2,6 +2,12 @@ import { create } from 'zustand';
 import type { RepoInfo, LogEntry, CommitDetail } from '../types/git';
 import { invoke } from '@tauri-apps/api/core';
 
+// 请求 ID 计数器 — 防止并发请求竞态（旧响应覆盖新状态）
+let _statusRequestId = 0;
+let _logRequestId = 0;
+let _commitDetailRequestId = 0;
+let _commitFileDiffRequestId = 0;
+
 interface RepoState {
   // Current repo
   repoPath: string | null;
@@ -36,6 +42,8 @@ interface RepoState {
   rebase: (onto: string) => Promise<void>;
   abortRebase: () => Promise<void>;
   rebaseContinue: () => Promise<void>;
+  abortConflict: () => Promise<void>;
+  continueConflict: () => Promise<void>;
   stageFile: (file: string) => Promise<void>;
   unstageFile: (file: string) => Promise<void>;
   stageAll: () => Promise<void>;
@@ -65,24 +73,36 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   commitFileDiffLoading: false,
 
   openRepo: async (path: string) => {
+    // 停止旧仓库的文件监听
+    const oldPath = get().repoPath;
+    if (oldPath) {
+      invoke('stop_file_watcher').catch(() => {});
+    }
+    const reqId = ++_statusRequestId;
     set({ repoPath: path, loading: true, error: null });
     try {
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath: path });
+      if (reqId !== _statusRequestId) return;
       set({ repoInfo: info, loading: false });
+      // 启动文件监听，自动刷新状态
+      invoke('start_file_watcher', { repoPath: path }).catch((e) => {
+        console.warn('文件监听启动失败（不影响主功能）:', e);
+      });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      if (reqId === _statusRequestId) set({ error: String(e), loading: false });
     }
   },
 
   refreshStatus: async () => {
     const { repoPath } = get();
     if (!repoPath) return;
+    const reqId = ++_statusRequestId;
     set({ loading: true });
     try {
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath });
-      set({ repoInfo: info, loading: false });
+      if (reqId === _statusRequestId) set({ repoInfo: info, loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      if (reqId === _statusRequestId) set({ error: String(e), loading: false });
     }
   },
 
@@ -90,8 +110,24 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   refreshStatusSilent: async () => {
     const { repoPath, repoInfo: oldInfo } = get();
     if (!repoPath) return;
+    const reqId = ++_statusRequestId;
     try {
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath });
+      if (reqId !== _statusRequestId) return;
+      // 浅比较：如果核心字段没变，跳过更新避免触发重渲染
+      if (oldInfo
+        && oldInfo.currentBranch === info.currentBranch
+        && oldInfo.ahead === info.ahead
+        && oldInfo.behind === info.behind
+        && oldInfo.has_upstream === info.has_upstream
+        && oldInfo.status.length === info.status.length
+        && oldInfo.status.every((old, i) => {
+          const cur = info.status[i];
+          return old.path === cur.path && old.status === cur.status && old.staged === cur.staged;
+        })
+      ) {
+        return; // 数据无变化，跳过更新
+      }
       // 保持旧列表中的文件顺序，新文件追加到末尾
       const oldOrder = oldInfo?.status ?? [];
       const gitMap = new Map(info.status.map((f) => [f.path, f]));
@@ -106,13 +142,14 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       }
       set({ repoInfo: { ...info, status: ordered } });
     } catch (e) {
-      set({ error: String(e) });
+      if (reqId === _statusRequestId) set({ error: String(e) });
     }
   },
 
   loadLog: async (maxCount?: number, branch?: string | null) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    const reqId = ++_logRequestId;
     set({ logLoading: true });
     try {
       const entries = await invoke<LogEntry[]>('get_log', {
@@ -120,9 +157,9 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         maxCount: maxCount ?? 100,
         branch: branch ?? null,
       });
-      set({ logEntries: entries, logLoading: false });
+      if (reqId === _logRequestId) set({ logEntries: entries, logLoading: false });
     } catch (e) {
-      set({ error: String(e), logLoading: false });
+      if (reqId === _logRequestId) set({ error: String(e), logLoading: false });
     }
   },
 
@@ -162,6 +199,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await invoke('git_push', { repoPath, remote, force, delete: deleteBranch, branch });
+      await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
       set({ error: String(e), loading: false });
@@ -229,6 +267,48 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await invoke('git_rebase_continue', { repoPath });
+      await get().refreshStatus();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  // 中止冲突（自动判断 rebase 或 merge）
+  abortConflict: async () => {
+    const { repoPath } = get();
+    if (!repoPath) return;
+    set({ loading: true, error: null });
+    try {
+      // 检查是否在 rebase 状态
+      const rebaseDir = await invoke<boolean>('check_rebase_state', { repoPath });
+      if (rebaseDir) {
+        await invoke('git_abort_rebase', { repoPath });
+      } else {
+        await invoke('git_merge_abort', { repoPath });
+      }
+      await get().refreshStatus();
+    } catch (e) {
+      set({ error: String(e) });
+    } finally {
+      set({ loading: false });
+    }
+  },
+
+  // 继续解决冲突（自动判断 rebase 或 merge）
+  continueConflict: async () => {
+    const { repoPath } = get();
+    if (!repoPath) return;
+    set({ loading: true, error: null });
+    try {
+      const rebaseDir = await invoke<boolean>('check_rebase_state', { repoPath });
+      if (rebaseDir) {
+        await invoke('git_rebase_continue', { repoPath });
+      } else {
+        // merge 冲突解决后直接 commit
+        await invoke('git_commit', { repoPath, message: 'Merge branch', files: [], amend: false });
+      }
       await get().refreshStatus();
     } catch (e) {
       set({ error: String(e) });
@@ -316,24 +396,26 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   loadCommitDetail: async (hash: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    const reqId = ++_commitDetailRequestId;
     set({ commitDetailLoading: true, selectedCommitFile: null, commitFileDiff: null });
     try {
       const detail = await invoke<CommitDetail>('get_commit_detail', { repoPath, hash });
-      set({ commitDetail: detail, commitDetailLoading: false });
+      if (reqId === _commitDetailRequestId) set({ commitDetail: detail, commitDetailLoading: false });
     } catch (e) {
-      set({ error: String(e), commitDetailLoading: false });
+      if (reqId === _commitDetailRequestId) set({ error: String(e), commitDetailLoading: false });
     }
   },
 
   loadCommitFileDiff: async (hash: string, file: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    const reqId = ++_commitFileDiffRequestId;
     set({ commitFileDiffLoading: true });
     try {
       const diff = await invoke<string>('get_commit_file_diff', { repoPath, hash, file });
-      set({ commitFileDiff: diff, commitFileDiffLoading: false });
+      if (reqId === _commitFileDiffRequestId) set({ commitFileDiff: diff, commitFileDiffLoading: false });
     } catch (e) {
-      set({ error: String(e), commitFileDiffLoading: false });
+      if (reqId === _commitFileDiffRequestId) set({ error: String(e), commitFileDiffLoading: false });
     }
   },
 

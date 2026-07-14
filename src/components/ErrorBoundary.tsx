@@ -17,8 +17,8 @@ export class ErrorBoundary extends Component<Props, State> {
     this.state = { hasError: false, errorCount: 0 };
   }
 
-  static getDerivedStateFromError(): State {
-    return { hasError: true, errorCount: 0 };
+  static getDerivedStateFromError(): Partial<State> {
+    return { hasError: true };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
@@ -47,7 +47,17 @@ export class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.hasError) {
-      return null;
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', height: '100vh', gap: 16,
+          background: '#141414', color: '#e0e0e0',
+        }}>
+          <div style={{ fontSize: 48 }}>😵</div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>页面出错了</div>
+          <div style={{ fontSize: 13, color: '#888' }}>正在自动恢复...</div>
+        </div>
+      );
     }
     return this.props.children;
   }

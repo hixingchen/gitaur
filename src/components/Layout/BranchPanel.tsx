@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   List, Tag, Button, Space, Empty, message,
   Typography, Input, Modal, Tooltip, Divider, Dropdown, Select, theme,
@@ -46,7 +46,16 @@ export function BranchPanel({ compact }: { compact?: boolean }) {
 
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [openDropdownBranch, setOpenDropdownBranch] = useState<string | null>(null);
+
+  // 防抖：300ms 内多次输入只执行最后一次
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search]);
   const getTag = useBranchTagStore((s) => s.getTag);
   const setTag = useBranchTagStore((s) => s.setTag);
   const removeTag = useBranchTagStore((s) => s.removeTag);
@@ -74,7 +83,7 @@ export function BranchPanel({ compact }: { compact?: boolean }) {
   const remoteBranches = branches.filter((b) => b.name.startsWith('remotes/'));
 
   // 搜索
-  const q = search.trim().toLowerCase();
+  const q = debouncedSearch.trim().toLowerCase();
   const filteredLocal = q
     ? localBranches.filter((b) => b.name.toLowerCase().includes(q))
     : localBranches;
@@ -105,7 +114,7 @@ export function BranchPanel({ compact }: { compact?: boolean }) {
   const handlePush = async (branchName?: string) => {
     setOpenDropdownBranch(null);
     try {
-      if (branchName && !branches.find((b) => b.isCurrent)?.name.startsWith(branchName)) {
+      if (branchName && branches.find((b) => b.isCurrent)?.name !== branchName) {
         await checkout(branchName);
       }
       await push('origin');

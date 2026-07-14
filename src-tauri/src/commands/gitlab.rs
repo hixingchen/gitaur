@@ -1,6 +1,92 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+/// Validate that a URL points to an external HTTP(S) host (not localhost/internal IPs).
+/// Prevents SSRF attacks. Also called from git module for clone URL validation.
+pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| format!("Invalid URL: {}", e))?;
+
+    // Only allow HTTP/HTTPS
+    match parsed.scheme() {
+        "http" | "https" => {}
+        scheme => return Err(format!("不允许的协议: {}，仅支持 http/https", scheme)),
+    }
+
+    // Block localhost and internal IPs
+    if let Some(host) = parsed.host_str() {
+        let lower = host.to_lowercase();
+
+        // Strip IPv6 brackets: [::1] → ::1, [::ffff:10.1.2.3] → ::ffff:10.1.2.3
+        let unbracketed = lower.trim_start_matches('[').trim_end_matches(']');
+
+        // Strip IPv6-mapped prefix: ::ffff:127.0.0.1 → 127.0.0.1
+        let normalized = unbracketed.strip_prefix("::ffff:").unwrap_or(unbracketed);
+
+        // IPv4 private/special ranges
+        if normalized == "localhost"
+            || normalized.starts_with("127.")
+            || normalized == "0.0.0.0"
+            || normalized.starts_with("169.254.")
+            || normalized.starts_with("10.")
+            || normalized.starts_with("192.168.")
+        {
+            return Err("不允许访问内部网络地址".to_string());
+        }
+
+        // 172.16.0.0/12 (172.16.x.x ~ 172.31.x.x)
+        if normalized.starts_with("172.") {
+            if let Some(second) = normalized.split('.').nth(1) {
+                if let Ok(n) = second.parse::<u8>() {
+                    if (16..=31).contains(&n) {
+                        return Err("不允许访问内部网络地址".to_string());
+                    }
+                }
+            }
+        }
+
+        // IPv6 private/special ranges — 使用标准库做可靠判断
+        if let Ok(ipv6) = normalized.parse::<std::net::Ipv6Addr>() {
+            if ipv6.is_loopback()            // ::1
+                || ipv6.is_unspecified()     // ::
+                || (ipv6.segments()[0] & 0xffc0) == 0xfe80  // fe80::/10 link-local
+                || (ipv6.segments()[0] & 0xfe00) == 0xfc00  // fc00::/7 ULA
+            {
+                return Err("不允许访问内部网络地址".to_string());
+            }
+        }
+        // 兜底：字符串匹配处理无法解析的 IPv6 格式
+        if normalized == "::1"
+            || normalized.starts_with("fe80:")
+            || normalized.starts_with("fc") || normalized.starts_with("fd")
+        {
+            return Err("不允许访问内部网络地址".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+/// Shared HTTP client with connection pooling and timeout.
+/// Avoids creating a new Client per request.
+/// 初始化失败时 fallback 到基础 Client，不会 panic。
+fn http_client() -> Result<&'static Client, String> {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(4)
+            .build()
+            .unwrap_or_else(|e| {
+                log::error!("Failed to create configured HTTP client: {}, using default", e);
+                Client::new()
+            })
+    });
+    CLIENT.get().ok_or_else(|| "HTTP 客户端初始化失败".to_string())
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GitLabProject {
@@ -104,7 +190,10 @@ pub async fn gitlab_request(
     method: String,
     body: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let client = Client::new();
+    // Validate URL to prevent SSRF
+    validate_external_url(&url)?;
+
+    let client = http_client()?;
 
     let mut request = match method.to_uppercase().as_str() {
         "GET" => client.get(&url),
@@ -142,6 +231,14 @@ pub async fn gitlab_request(
     Ok(json)
 }
 
+/// Validate MR state parameter — only allow known GitLab states.
+fn validate_mr_state(state: &str) -> Result<(), String> {
+    match state {
+        "opened" | "closed" | "merged" | "all" => Ok(()),
+        _ => Err(format!("无效的 MR 状态: {}", state)),
+    }
+}
+
 #[tauri::command]
 pub async fn gitlab_list_merge_requests(
     base_url: String,
@@ -149,6 +246,11 @@ pub async fn gitlab_list_merge_requests(
     project_id: String,
     state: String,
 ) -> Result<Vec<GitLabMergeRequest>, String> {
+    // Validate state parameter
+    validate_mr_state(&state)?;
+    // Validate base_url to prevent SSRF
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests?state={}&per_page=50",
@@ -157,8 +259,7 @@ pub async fn gitlab_list_merge_requests(
         state
     );
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .get(&url)
         .header("PRIVATE-TOKEN", &token)
         .send()
@@ -184,6 +285,8 @@ pub async fn gitlab_create_merge_request(
     project_id: String,
     params: CreateMergeRequestParams,
 ) -> Result<GitLabMergeRequest, String> {
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests",
@@ -191,8 +294,7 @@ pub async fn gitlab_create_merge_request(
         encoded_project
     );
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .post(&url)
         .header("PRIVATE-TOKEN", &token)
         .json(&params)
@@ -200,14 +302,14 @@ pub async fn gitlab_create_merge_request(
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-    let status = response.status();
-    let response_text = response.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        return Err(format!("GitLab API error: {}", response_text));
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("GitLab API error: {}", error_text));
     }
 
-    let mr: GitLabMergeRequest = serde_json::from_str(&response_text)
+    let mr: GitLabMergeRequest = response
+        .json()
+        .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     Ok(mr)
@@ -230,6 +332,8 @@ pub async fn gitlab_merge_merge_request(
     squash: Option<bool>,
     remove_source_branch: Option<bool>,
 ) -> Result<GitLabMergeRequest, String> {
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests/{}/merge",
@@ -243,8 +347,7 @@ pub async fn gitlab_merge_merge_request(
         should_remove_source_branch: remove_source_branch,
     };
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .put(&url)
         .header("PRIVATE-TOKEN", &token)
         .json(&body)
@@ -272,6 +375,8 @@ pub async fn gitlab_approve_merge_request(
     project_id: String,
     mr_iid: u64,
 ) -> Result<serde_json::Value, String> {
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests/{}/approve",
@@ -280,8 +385,7 @@ pub async fn gitlab_approve_merge_request(
         mr_iid
     );
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .post(&url)
         .header("PRIVATE-TOKEN", &token)
         .send()
@@ -308,6 +412,8 @@ pub async fn gitlab_get_notes(
     project_id: String,
     mr_iid: u64,
 ) -> Result<Vec<GitLabNote>, String> {
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests/{}/notes?per_page=100",
@@ -316,8 +422,7 @@ pub async fn gitlab_get_notes(
         mr_iid
     );
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .get(&url)
         .header("PRIVATE-TOKEN", &token)
         .send()
@@ -344,6 +449,8 @@ pub async fn gitlab_create_note(
     mr_iid: u64,
     body: String,
 ) -> Result<GitLabNote, String> {
+    validate_external_url(&base_url)?;
+
     let encoded_project = urlencoding::encode(&project_id);
     let url = format!(
         "{}/api/v4/projects/{}/merge_requests/{}/notes",
@@ -354,8 +461,7 @@ pub async fn gitlab_create_note(
 
     let note_body = serde_json::json!({ "body": body });
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .post(&url)
         .header("PRIVATE-TOKEN", &token)
         .json(&note_body)
@@ -382,14 +488,15 @@ pub async fn gitlab_search_projects(
     token: String,
     query: String,
 ) -> Result<Vec<GitLabProject>, String> {
+    validate_external_url(&base_url)?;
+
     let url = format!(
         "{}/api/v4/projects?search={}&per_page=20",
         base_url.trim_end_matches('/'),
         urlencoding::encode(&query)
     );
 
-    let client = Client::new();
-    let response = client
+    let response = http_client()?
         .get(&url)
         .header("PRIVATE-TOKEN", &token)
         .send()

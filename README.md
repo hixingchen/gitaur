@@ -132,31 +132,31 @@ gitaur/
 │   │   ├── Layout/               # 布局（AppLayout、Titlebar、BranchPanel）
 │   │   ├── Toolbar/              # 工具栏弹窗（打开仓库、克隆、新建分支）
 │   │   ├── Graph/                # 提交历史图形化（HistoryView、CommitDetailPanel）
-│   │   ├── DiffView/             # 文件差异对比
-│   │   ├── FileTree/             # 文件树
-│   │   ├── Pipeline/             # 流水线面板
+│   │   ├── DiffView/             # 文件差异对比（Monaco Editor）
+│   │   ├── FileTree/             # 文件树（虚拟滚动）
+│   │   ├── Pipeline/             # 流水线面板（状态机驱动）
 │   │   ├── MergeRequest/         # GitLab 合并请求
 │   │   ├── Settings/             # 设置页
 │   │   └── ErrorBoundary.tsx     # 错误边界
 │   ├── stores/                   # Zustand 状态管理
-│   │   ├── repoStore.ts          # 仓库状态
+│   │   ├── repoStore.ts          # 仓库状态（文件监听、状态刷新）
 │   │   ├── repoManagerStore.ts   # 多仓库管理
-│   │   ├── pipelineStore.ts      # 流水线状态
-│   │   ├── gitlabStore.ts        # GitLab 集成
+│   │   ├── pipelineStore.ts      # 流水线状态（任务 CRUD、MR 轮询）
+│   │   ├── gitlabStore.ts        # GitLab 集成（项目搜索、MR 管理）
 │   │   ├── branchTagStore.ts     # 分支标签
 │   │   ├── settingsStore.ts      # 全局设置
 │   │   └── viewStore.ts          # 视图状态
 │   ├── hooks/                    # 自定义 Hooks
+│   │   ├── useMrPolling.ts       # MR 状态轮询（指数退避）
+│   │   └── useFileWatcher.ts     # 文件监听（防抖）
 │   ├── services/                 # 服务层（GitLab API）
 │   ├── types/                    # TypeScript 类型定义
-│   ├── App.tsx                   # 应用主组件
+│   ├── App.tsx                   # 应用主组件（懒加载页面）
 │   └── main.tsx                  # 入口文件
 ├── src-tauri/                    # Tauri 后端源码
 │   ├── src/
-│   │   ├── commands/             # Tauri 命令（git、repo、settings、gitlab）
-│   │   ├── git/                  # Git 操作封装（executor、parser、error）
-│   │   ├── http/                 # HTTP 客户端（GitLab、Gitee API）
-│   │   ├── cache.rs              # 缓存管理
+│   │   ├── commands/             # Tauri 命令（git、repo、gitlab）
+│   │   ├── git/                  # Git 操作封装（executor、parser）
 │   │   ├── watcher.rs            # 文件监听（自动刷新）
 │   │   └── lib.rs                # 应用入口
 │   ├── Cargo.toml                # Rust 依赖

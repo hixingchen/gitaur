@@ -6,8 +6,7 @@ import {
 } from '@ant-design/icons';
 import { useGitLabStore } from '../../stores/gitlabStore';
 import type { GitLabMergeRequest, GitLabNote } from '../../services/gitlab';
-import { GitLabService } from '../../services/gitlab';
-import { useSettingsStore } from '../../stores/settingsStore';
+import { getStateTag, getMergeStatusTag } from '../../utils/mr';
 
 interface MRDetailProps {
   mr: GitLabMergeRequest;
@@ -21,25 +20,21 @@ export function MRDetail({ mr, onBack }: MRDetailProps) {
   const [submitting, setSubmitting] = useState(false);
 
   const currentProject = useGitLabStore((s) => s.currentProject);
+  const service = useGitLabStore((s) => s.service);
   const mergeMR = useGitLabStore((s) => s.mergeMR);
   const closeMR = useGitLabStore((s) => s.closeMR);
   const approveMR = useGitLabStore((s) => s.approveMR);
   const refreshMR = useGitLabStore((s) => s.refreshMR);
-  const settings = useSettingsStore((s) => s.settings);
 
   useEffect(() => {
     loadNotes();
   }, [mr.iid]);
 
   const loadNotes = async () => {
-    if (!currentProject || !settings.gitlabUrl || !settings.gitlabToken) return;
+    if (!service || !currentProject) return;
 
     setLoadingNotes(true);
     try {
-      const service = new GitLabService({
-        url: settings.gitlabUrl,
-        token: settings.gitlabToken,
-      });
       const fetchedNotes = await service.getNotes(
         currentProject.path_with_namespace,
         mr.iid
@@ -77,14 +72,10 @@ export function MRDetail({ mr, onBack }: MRDetailProps) {
   };
 
   const handleSubmitComment = async () => {
-    if (!comment.trim() || !currentProject || !settings.gitlabUrl || !settings.gitlabToken) return;
+    if (!comment.trim() || !service || !currentProject) return;
 
     setSubmitting(true);
     try {
-      const service = new GitLabService({
-        url: settings.gitlabUrl,
-        token: settings.gitlabToken,
-      });
       await service.createNote(
         currentProject.path_with_namespace,
         mr.iid,
@@ -97,34 +88,6 @@ export function MRDetail({ mr, onBack }: MRDetailProps) {
       message.error('提交评论失败');
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const getStateTag = (state: string) => {
-    switch (state) {
-      case 'opened':
-        return <Tag color="success">打开</Tag>;
-      case 'closed':
-        return <Tag color="default">关闭</Tag>;
-      case 'merged':
-        return <Tag color="processing">已合并</Tag>;
-      default:
-        return <Tag>{state}</Tag>;
-    }
-  };
-
-  const getMergeStatusTag = (status: string) => {
-    switch (status) {
-      case 'mergeable':
-        return <Tag color="success">可合并</Tag>;
-      case 'checking':
-        return <Tag color="processing">检查中</Tag>;
-      case 'conflict':
-        return <Tag color="error">有冲突</Tag>;
-      case 'not_mergeable':
-        return <Tag color="warning">不可合并</Tag>;
-      default:
-        return null;
     }
   };
 

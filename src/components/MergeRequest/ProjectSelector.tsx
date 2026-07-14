@@ -5,7 +5,7 @@ import { useGitLabStore } from '../../stores/gitlabStore';
 import type { GitLabProject } from '../../services/gitlab';
 
 interface ProjectSelectorProps {
-  onSelect: (project: GitLabProject) => void;
+  onSelect?: (project: GitLabProject) => void;
 }
 
 export function ProjectSelector({ onSelect }: ProjectSelectorProps) {
@@ -34,7 +34,7 @@ export function ProjectSelector({ onSelect }: ProjectSelectorProps) {
     const project = projects.find((p) => p.id === projectId);
     if (project) {
       selectProject(project);
-      onSelect(project);
+      onSelect?.(project);
     }
   };
 

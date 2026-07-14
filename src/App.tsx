@@ -1,24 +1,28 @@
-import { useEffect, useState, useMemo, memo, useCallback } from 'react';
+import { useEffect, useState, useMemo, memo, useCallback, useRef, lazy, Suspense } from 'react';
 import './App.css';
-import { ConfigProvider, theme, App as AntApp, Button, Input, Modal, Space, message, Typography, Popover } from 'antd';
+import { ConfigProvider, theme, App as AntApp, Button, Input, Modal, Space, message, Typography, Popover, Spin } from 'antd';
 import { FolderOpenOutlined, PlusOutlined, SearchOutlined, EditOutlined, MoreOutlined, DeleteOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import { AppLayout, type NavKey } from './components/Layout/AppLayout';
-import { BranchPanel } from './components/Layout/BranchPanel';
+import { AppLayout } from './components/Layout/AppLayout';
+import { type NavKey } from './stores/viewStore';
 import { OpenRepoModal } from './components/Toolbar/OpenRepoModal';
 import { CloneModal } from './components/Toolbar/CloneModal';
 import { BranchModal } from './components/Toolbar/BranchModal';
-import { MRPage } from './components/MergeRequest/MRPage';
-import { PipelinePanel } from './components/Pipeline/PipelinePanel';
-import { HistoryView } from './components/Graph/HistoryView';
-import { SettingsPage } from './components/Settings/SettingsPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
+
+// 懒加载页面组件
+const BranchPanel = lazy(() => import('./components/Layout/BranchPanel').then((m) => ({ default: m.BranchPanel })));
+const MRPage = lazy(() => import('./components/MergeRequest/MRPage').then((m) => ({ default: m.MRPage })));
+const PipelinePanel = lazy(() => import('./components/Pipeline/PipelinePanel').then((m) => ({ default: m.PipelinePanel })));
+const HistoryView = lazy(() => import('./components/Graph/HistoryView').then((m) => ({ default: m.HistoryView })));
+const SettingsPage = lazy(() => import('./components/Settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 import { useRepoStore } from './stores/repoStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useRepoManagerStore } from './stores/repoManagerStore';
 import { usePipelineStore } from './stores/pipelineStore';
 import { useBranchTagStore } from './stores/branchTagStore';
 import { useGitLabStore } from './stores/gitlabStore';
+import { useViewStore } from './stores/viewStore';
 import type { SavedRepo } from './stores/repoManagerStore';
 import { useFileWatcher } from './hooks/useFileWatcher';
 import { invoke } from '@tauri-apps/api/core';
@@ -122,13 +126,23 @@ const RepoCard = memo(function RepoCard({
 
 function App() {
   const [darkMode, setDarkMode] = useState(true);
-  const [activeNav, setActiveNav] = useState<NavKey>('home');
+  const activeNav = useViewStore((s) => s.activeNav);
+  const setActiveNav = useViewStore((s) => s.setActiveNav);
   const [openModalVisible, setOpenModalVisible] = useState(false);
   const [cloneModalVisible, setCloneModalVisible] = useState(false);
   const [branchModalVisible, setBranchModalVisible] = useState(false);
   const [repoSearch, setRepoSearch] = useState('');
+  const [debouncedRepoSearch, setDebouncedRepoSearch] = useState('');
+  const repoSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renameTarget, setRenameTarget] = useState<SavedRepo | null>(null);
   const [renameValue, setRenameValue] = useState('');
+
+  // 防抖：300ms 内多次输入只执行最后一次
+  useEffect(() => {
+    if (repoSearchDebounceRef.current) clearTimeout(repoSearchDebounceRef.current);
+    repoSearchDebounceRef.current = setTimeout(() => setDebouncedRepoSearch(repoSearch), 300);
+    return () => { if (repoSearchDebounceRef.current) clearTimeout(repoSearchDebounceRef.current); };
+  }, [repoSearch]);
 
   // Settings
   const initSettings = useSettingsStore((s) => s.init);
@@ -140,6 +154,7 @@ function App() {
   const openRepo = useRepoStore((s) => s.openRepo);
   const closeRepo = useRepoStore((s) => s.closeRepo);
   const refreshStatus = useRepoStore((s) => s.refreshStatus);
+  const refreshStatusSilent = useRepoStore((s) => s.refreshStatusSilent);
   const loadLog = useRepoStore((s) => s.loadLog);
   const error = useRepoStore((s) => s.error);
   const clearError = useRepoStore((s) => s.clearError);
@@ -157,10 +172,12 @@ function App() {
       await initSettings();
       // 初始化 GitLab 服务（settings 加载完成后）
       useGitLabStore.getState().init();
-      await initRepoManager();
-      // 初始化流水线和分支标签持久化
-      await usePipelineStore.getState().init();
-      await useBranchTagStore.getState().init();
+      // 并行初始化独立的 store
+      await Promise.all([
+        initRepoManager(),
+        usePipelineStore.getState().init(),
+        useBranchTagStore.getState().init(),
+      ]);
       // 自动打开上次使用的仓库
       const lastPath = useRepoManagerStore.getState().lastRepoPath;
       if (lastPath) {
@@ -168,20 +185,19 @@ function App() {
           const valid = await invoke<boolean>('validate_repo_path', { path: lastPath });
           if (valid) {
             await openRepo(lastPath);
-            await loadLog(50);
-            // 切换流水线到当前仓库
-            usePipelineStore.getState().switchRepo(lastPath);
-            // 自动选择 GitLab 项目
+            // 并行加载日志和切换流水线
+            await Promise.all([
+              loadLog(50),
+              (async () => usePipelineStore.getState().switchRepo(lastPath))(),
+            ]);
+            // 异步选择 GitLab 项目（不阻塞 UI）
             const gitlabStore = useGitLabStore.getState();
             if (gitlabStore.service) {
               const repoName = lastPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
-              console.log('autoOpenRepo: searching for', repoName);
-              await gitlabStore.searchProjects(repoName);
-              const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
-              if (matched) {
-                console.log('autoOpenRepo: matched', matched.path_with_namespace);
-                gitlabStore.selectProject(matched);
-              }
+              gitlabStore.searchProjects(repoName).then(() => {
+                const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
+                if (matched) gitlabStore.selectProject(matched);
+              }).catch(() => {});
             }
           } else {
             // 路径不存在，清除记录
@@ -196,11 +212,18 @@ function App() {
     })();
   }, []);
   useEffect(() => { setDarkMode(appTheme === 'dark'); }, [appTheme]);
-  const handleRefresh = useCallback(() => { refreshStatus(); }, [refreshStatus]);
-  useFileWatcher(handleRefresh, !!repoPath);
+  const handleRefreshSilent = useCallback(() => { refreshStatusSilent(); }, [refreshStatusSilent]);
+  useFileWatcher(handleRefreshSilent, !!repoPath);
   useEffect(() => {
     if (error) { message.error(error); clearError(); }
   }, [error, clearError]);
+
+  // 应用退出时停止 file watcher，释放 OS 资源
+  useEffect(() => {
+    return () => {
+      invoke('stop_file_watcher').catch((e) => console.warn('停止文件监听失败:', e));
+    };
+  }, []);
 
   // ====== 仓库操作 ======
   const doOpenRepo = async (path: string, alias?: string, nav?: NavKey) => {
@@ -215,20 +238,14 @@ function App() {
     await useBranchTagStore.getState().autoTag(path, branches);
     // 自动选择 GitLab 项目（根据仓库路径匹配）
     const gitlabStore = useGitLabStore.getState();
-    console.log('autoSelectProject: service=', !!gitlabStore.service);
     if (gitlabStore.service) {
       const repoName = path.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
-      console.log('autoSelectProject: searching for', repoName);
       try {
         await gitlabStore.searchProjects(repoName);
         const projects = gitlabStore.projects;
-        console.log('autoSelectProject: found projects', projects.map(p => p.path_with_namespace));
         const matched = projects.find((p) => p.path === repoName || p.name === repoName);
         if (matched) {
-          console.log('autoSelectProject: matched', matched.path_with_namespace);
           gitlabStore.selectProject(matched);
-        } else {
-          console.log('autoSelectProject: no match found');
         }
       } catch (e) {
         console.error('autoSelectProject: error', e);
@@ -288,12 +305,12 @@ function App() {
 
   // 搜索过滤
   const filteredRepos = useMemo(() => {
-    if (!repoSearch.trim()) return savedRepos;
-    const q = repoSearch.toLowerCase();
+    if (!debouncedRepoSearch.trim()) return savedRepos;
+    const q = debouncedRepoSearch.toLowerCase();
     return savedRepos.filter(
       (r) => r.alias.toLowerCase().includes(q) || r.path.toLowerCase().includes(q),
     );
-  }, [savedRepos, repoSearch]);
+  }, [savedRepos, debouncedRepoSearch]);
 
   if (settingsLoading) {
     return (
@@ -426,10 +443,16 @@ function App() {
       );
     }
 
+    const PageSpinner = () => (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '50%' }}>
+        <Spin size="large" />
+      </div>
+    );
+
     switch (activeNav) {
       case 'workspace':
       case 'pipeline':
-        return <PipelinePanel />;
+        return <Suspense fallback={<PageSpinner />}><PipelinePanel /></Suspense>;
 
       case 'branches':
         return (
@@ -441,18 +464,18 @@ function App() {
               <Button type="primary" size="small" onClick={() => setBranchModalVisible(true)}>新建分支</Button>
             </div>
             <BranchModal open={branchModalVisible} onClose={() => setBranchModalVisible(false)} />
-            <BranchPanel />
+            <Suspense fallback={<PageSpinner />}><BranchPanel /></Suspense>
           </div>
         );
 
       case 'history':
-        return <HistoryView />;
+        return <Suspense fallback={<PageSpinner />}><HistoryView /></Suspense>;
 
       case 'mergerequests':
-        return <MRPage />;
+        return <Suspense fallback={<PageSpinner />}><MRPage /></Suspense>;
 
       case 'settings':
-        return <SettingsPage />;
+        return <Suspense fallback={<PageSpinner />}><SettingsPage /></Suspense>;
 
       default:
         return null;

@@ -25,6 +25,10 @@ interface GitLabState {
   clearError: () => void;
 }
 
+// 项目搜索缓存（5 分钟 TTL）
+const _projectCache = new Map<string, { projects: GitLabProject[]; ts: number }>();
+const CACHE_TTL = 5 * 60 * 1000;
+
 export const useGitLabStore = create<GitLabState>((set, get) => ({
   service: null,
   projects: [],
@@ -52,9 +56,17 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       return;
     }
 
+    // 检查缓存
+    const cached = _projectCache.get(query);
+    if (cached && Date.now() - cached.ts < CACHE_TTL) {
+      set({ projects: cached.projects, loading: false });
+      return;
+    }
+
     set({ loading: true, error: null });
     try {
       const projects = await service.searchProjects(query);
+      _projectCache.set(query, { projects, ts: Date.now() });
       set({ projects, loading: false });
     } catch (e) {
       set({ error: `搜索项目失败: ${e}`, loading: false });
@@ -145,10 +157,9 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      await service.updateMergeRequest(
+      await service.closeMergeRequest(
         currentProject.path_with_namespace,
         mrIid,
-        { target_branch: '' } as any
       );
       await get().loadMergeRequests();
       set({ loading: false });
