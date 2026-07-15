@@ -43,76 +43,69 @@ function HL({ text, q }: { text: string; q: string }) {
   )}</>;
 }
 
-// ====== 统一 SVG 图形 ======
+// ====== 统一 SVG 图形 — 直角连接（地铁图风格） ======
 function GraphSVG({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number }) {
   const width = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
   const height = commits.length * ROW_H;
-  const getLaneX = (lane: number) => lane * LANE_W + GRAPH_PAD;
-  const getRowY = (i: number) => i * ROW_H + ROW_H / 2;
+  const LX = (lane: number) => lane * LANE_W + GRAPH_PAD;
+  const RY = (i: number) => i * ROW_H + ROW_H / 2;
 
   const hashIndex = useMemo(() => new Map(commits.map((c, i) => [c.hash, i])), [commits]);
   const hashLane = useMemo(() => new Map(commits.map(c => [c.hash, c.lane])), [commits]);
 
-  // 找每个 lane 的首尾提交行
+  // 每个 lane 的首尾行
   const laneRanges = useMemo(() => {
-    const ranges = new Map<number, { first: number; last: number }>();
+    const m = new Map<number, { first: number; last: number }>();
     for (let i = 0; i < commits.length; i++) {
-      const lane = commits[i].lane;
-      const existing = ranges.get(lane);
-      if (!existing) ranges.set(lane, { first: i, last: i });
-      else existing.last = i;
+      const l = commits[i].lane;
+      const e = m.get(l);
+      if (!e) m.set(l, { first: i, last: i });
+      else e.last = i;
     }
-    return ranges;
+    return m;
   }, [commits]);
 
   return (
     <svg width={width} height={height} style={{ display: 'block' }}>
-      {/* 每条 lane 的贯穿垂直线 */}
-      {Array.from(laneRanges.entries()).map(([lane, range]) => {
-        const x = getLaneX(lane);
-        const y1 = getRowY(range.first);
-        const y2 = getRowY(range.last);
-        return (
-          <line key={`lane-${lane}`}
-            x1={x} y1={y1} x2={x} y2={y2}
-            stroke={BRANCH_COLORS[lane % BRANCH_COLORS.length]}
-            strokeWidth={2} strokeLinecap="round"
-          />
-        );
-      })}
+      {/* 贯穿垂直线 */}
+      {Array.from(laneRanges.entries()).map(([lane, range]) => (
+        <line key={`v-${lane}`}
+          x1={LX(lane)} y1={RY(range.first)}
+          x2={LX(lane)} y2={RY(range.last)}
+          stroke={BRANCH_COLORS[lane % BRANCH_COLORS.length]}
+          strokeWidth={2} strokeLinecap="round"
+        />
+      ))}
 
-      {/* 到父提交的连线（曲线） */}
+      {/* 父子连线 — 直角：先水平再垂直 */}
       {commits.map((c, i) => {
-        const cx = getLaneX(c.lane);
-        const cy = getRowY(i);
+        const cx = LX(c.lane);
+        const cy = RY(i);
         return c.parents.map(pHash => {
           const pIdx = hashIndex.get(pHash);
           const pLane = hashLane.get(pHash);
           if (pIdx === undefined || pLane === undefined || pIdx <= i) return null;
+          if (c.lane === pLane) return null; // 同 lane 已有贯穿线
 
-          const px = getLaneX(pLane);
-          const py = getRowY(pIdx);
+          const px = LX(pLane);
+          const py = RY(pIdx);
           const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
+          // 在父子中间行做拐点
+          const midY = cy + (py - cy) * 0.5;
 
-          if (c.lane === pLane) {
-            // 同 lane — 已有贯穿线，跳过
-            return null;
-          }
-          // 不同 lane — S 曲线
-          const cp = Math.abs(px - cx) * 0.55;
           return (
             <path key={`${c.hash}-${pHash}`}
-              d={`M ${cx} ${cy} C ${cx} ${cy + cp}, ${px} ${py - cp}, ${px} ${py}`}
-              fill="none" stroke={color} strokeWidth={2} strokeLinecap="round"
+              d={`M ${cx} ${cy} L ${cx} ${midY} L ${px} ${midY} L ${px} ${py}`}
+              fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
             />
           );
         });
       })}
 
-      {/* 提交圆点 */}
+      {/* 圆点 */}
       {commits.map((c, i) => {
-        const cx = getLaneX(c.lane);
-        const cy = getRowY(i);
+        const cx = LX(c.lane);
+        const cy = RY(i);
         return (
           <g key={c.hash}>
             {c.isBranchTip && (
