@@ -85,29 +85,55 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const renderActions = () => {
     switch (phase) {
       // ====== 未开始 ======
-      case 'pending':
+      case 'pending': {
+        const branchError = task.steps.find(s => s.key === 'branch')?.status === 'error';
         return (
           <Space size={6}>
             <Button type="primary" icon={<PlayCircleOutlined />} size="small"
-              onClick={() => startTask(task.id)} loading={loading}>开始</Button>
+              onClick={() => startTask(task.id)} loading={loading}>
+              {branchError ? '重试' : '开始'}
+            </Button>
             <DeleteBtn />
           </Space>
         );
+      }
 
       // ====== 开发中（分支已创建，用户可操作） ======
       case 'developing': {
-        const commitDone = task.steps.find(s => s.key === 'commit')?.status === 'finish';
-        const syncDone = task.steps.find(s => s.key === 'sync')?.status === 'finish';
-        const pushDone = task.steps.find(s => s.key === 'push')?.status === 'finish';
+        const commitStep = task.steps.find(s => s.key === 'commit');
+        const syncStep = task.steps.find(s => s.key === 'sync');
+        const pushStep = task.steps.find(s => s.key === 'push');
+        const mrStep = task.steps.find(s => s.key === 'mr');
+
+        const commitDone = commitStep?.status === 'finish';
+        const syncDone = syncStep?.status === 'finish';
+        const pushDone = pushStep?.status === 'finish';
+        const pushError = pushStep?.status === 'error';
+        const mrError = mrStep?.status === 'error';
 
         // 推送已完成 → 主操作是创建MR，可回退继续开发
         if (pushDone) {
           return (
             <Space size={6}>
               <Button type="primary" icon={<PullRequestOutlined />} size="small"
-                onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+                onClick={() => createMR(task.id)} loading={loading}>
+                {mrError ? '重试创建MR' : '创建MR'}
+              </Button>
               <Button icon={<EditOutlined />} size="small"
                 onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+              <DeleteBtn />
+            </Space>
+          );
+        }
+
+        // 推送失败 → 显示重试推送 + 同步
+        if (pushError) {
+          return (
+            <Space size={6}>
+              <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+                onClick={() => pushRemote(task.id)} loading={loading}>重试推送</Button>
+              <Button icon={<ReloadOutlined />} size="small"
+                onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
               <DeleteBtn />
             </Space>
           );
@@ -204,6 +230,8 @@ export function PipelineBar({ task }: PipelineBarProps) {
             <Tag color="error">⚠️ 冲突</Tag>
             <Button type="primary" icon={<SyncOutlined />} size="small"
               onClick={() => resumeFromConflict(task.id)} loading={loading}>同步远程</Button>
+            <Button icon={<EditOutlined />} size="small"
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
             <DeleteBtn />
           </Space>
         );

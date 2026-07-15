@@ -401,8 +401,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'branch', {
         status: 'error', error: errorMsg, endTime: Date.now(),
       });
+      // 分支创建失败 → 回到 pending，用户可重试开始
       currentTask = setTaskStatus(currentTask, 'paused', errorMsg);
-      currentTask = { ...currentTask, phase: 'delete_only' };
+      currentTask = { ...currentTask, phase: 'pending' };
       updateTask(currentTask);
     }
   },
@@ -426,7 +427,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       // 检查是否有变更
       const hasChanges = repoInfo && repoInfo.status.length > 0;
       if (!hasChanges) {
+        // 无变更 → 保留原 phase，不改变状态
         currentTask = setTaskStatus(currentTask, 'paused', '没有代码变更');
+        currentTask = { ...currentTask, phase: task.phase }; // 保留原 phase
         updateTask(currentTask);
         return;
       }
@@ -594,8 +597,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'push', {
         status: 'error', error: friendlyMsg, endTime: Date.now(),
       });
+      // 推送失败 → 回到开发阶段，用户可同步后重试推送
       currentTask = setTaskStatus(currentTask, 'paused');
-      currentTask = { ...currentTask, phase: 'delete_only' };
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
     }
   },
@@ -671,8 +675,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             console.error('createMR: error', mrError);
             message.error(`创建 MR 失败: ${mrError}`);
             currentTask = updateStep(currentTask, 'mr', { status: 'error', error: String(mrError), endTime: Date.now() });
+            // MR 创建失败 → 回到开发阶段，用户可重试创建 MR
             currentTask = setTaskStatus(currentTask, 'paused');
-            currentTask = { ...currentTask, phase: 'delete_only' };
+            currentTask = { ...currentTask, phase: 'developing' };
             updateTask(currentTask);
             return;
           }
@@ -691,8 +696,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     } catch (e) {
       const errorMsg = String(e);
       message.error(errorMsg);
+      // 保留 developing phase，用户可重试
       currentTask = setTaskStatus(currentTask, 'paused');
-      currentTask = { ...currentTask, phase: 'delete_only' };
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
     }
   },
@@ -923,6 +929,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       if (task) {
         let resetTask = updateStep(task, 'sync', { status: 'wait', error: undefined });
         resetTask = setTaskStatus(resetTask, 'paused');
+        resetTask = { ...resetTask, phase: 'developing' as PipelinePhase };
         set((state) => {
           const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? resetTask : t));
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
