@@ -10,9 +10,10 @@ import { CommitDetailPanel } from './CommitDetailPanel';
 import { SectionErrorBoundary } from '../SectionErrorBoundary';
 import s from './HistoryView.module.css';
 
-const ROW_H = 48;
-const LANE_W = 20;
-const DOT_R = 5;
+const ROW_H = 44;
+const LANE_W = 22;
+const GRAPH_PAD = 12;
+const DOT_R = 4.5;
 
 // ====== 相对时间 ======
 function formatRelativeTime(dateStr: string): string {
@@ -33,150 +34,154 @@ function formatRelativeTime(dateStr: string): string {
   }
 }
 
-// ====== SVG 图形组件 ======
-function CommitGraph({ commit, maxLane, commits }: { commit: LaneCommit; maxLane: number; commits: LaneCommit[] }) {
-  const width = (maxLane + 1) * LANE_W + 16;
-  const cx = commit.lane * LANE_W + 10;
-  const cy = ROW_H / 2;
+// ====== 高亮搜索文本 ======
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+  return <>{text.split(regex).map((part, i) =>
+    regex.test(part) ? <span key={i} className={s.highlight}>{part}</span> : part
+  )}</>;
+}
 
-  const hashIndex = new Map(commits.map((c, i) => [c.hash, i]));
-  const hashLane = new Map(commits.map(c => [c.hash, c.lane]));
-  const currentIdx = commits.indexOf(commit);
+// ====== 统一 SVG 图形画布 ======
+function CommitGraphCanvas({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number }) {
+  const hashIndex = useMemo(() => new Map(commits.map((c, i) => [c.hash, i])), [commits]);
+  const hashLane = useMemo(() => new Map(commits.map(c => [c.hash, c.lane])), [commits]);
 
-  // 判断当前行前后是否有同 lane 的提交（决定是否画贯穿线）
-  const hasAbove = currentIdx > 0 && commits[currentIdx - 1].lane === commit.lane;
-  const hasBelow = currentIdx < commits.length - 1 && commits[currentIdx + 1]?.lane === commit.lane;
+  const width = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
+  const height = commits.length * ROW_H;
+
+  const getLaneX = (lane: number) => lane * LANE_W + GRAPH_PAD + DOT_R;
+  const getRowY = (idx: number) => idx * ROW_H + ROW_H / 2;
+
+  // 收集所有连线段
+  const lines: Array<{ x1: number; y1: number; x2: number; y2: number; color: string; isCurve: boolean }> = [];
+  const dots: Array<{ x: number; y: number; color: string; isTip: boolean; isMerge: boolean }> = [];
+
+  for (let i = 0; i < commits.length; i++) {
+    const c = commits[i];
+    const cx = getLaneX(c.lane);
+    const cy = getRowY(i);
+
+    // 到父提交的连线
+    for (const pHash of c.parents) {
+      const pIdx = hashIndex.get(pHash);
+      const pLane = hashLane.get(pHash);
+      if (pIdx === undefined || pLane === undefined || pIdx <= i) continue;
+
+      const px = getLaneX(pLane);
+      const py = getRowY(pIdx);
+      const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
+
+      lines.push({ x1: cx, y1: cy, x2: px, y2: py, color, isCurve: c.lane !== pLane });
+    }
+
+    // 提交圆点
+    dots.push({
+      x: cx, y: cy,
+      color: c.color,
+      isTip: c.isBranchTip,
+      isMerge: c.isMerge,
+    });
+  }
 
   return (
-    <svg width={width} height={ROW_H} style={{ display: 'block' }} xmlns="http://www.w3.org/2000/svg">
-      {/* 贯穿线 — 只在有连续提交的 lane 上画 */}
-      {hasAbove && (
-        <line x1={cx} y1={0} x2={cx} y2={cy}
-          style={{ stroke: commit.color, strokeWidth: 1.5, strokeLinecap: 'round' }}
-        />
-      )}
-      {hasBelow && (
-        <line x1={cx} y1={cy} x2={cx} y2={ROW_H}
-          style={{ stroke: commit.color, strokeWidth: 1.5, strokeLinecap: 'round' }}
-        />
-      )}
-
-      {/* 到父提交的连线 */}
-      {commit.parents.map(pHash => {
-        const pIdx = hashIndex.get(pHash);
-        const pLane = hashLane.get(pHash);
-        if (pIdx === undefined || pLane === undefined) return null;
-        if (pIdx <= currentIdx) return null;
-
-        const px = pLane * LANE_W + 10;
-        const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
-        const lineStyle = { stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' as const, fill: 'none' };
-
-        if (commit.lane === pLane) {
-          return <line key={pHash} x1={cx} y1={cy} x2={px} y2={ROW_H} style={lineStyle} />;
+    <svg
+      width={width} height={height}
+      style={{ display: 'block', position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
+    >
+      {/* 连线层 */}
+      {lines.map((line, i) => {
+        if (!line.isCurve) {
+          // 同 lane 直线
+          return (
+            <line key={i}
+              x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2}
+              stroke={line.color} strokeWidth={2} strokeLinecap="round"
+            />
+          );
         }
-        const midY = cy + (ROW_H - cy) * 0.5;
+        // 不同 lane — 三次贝塞尔，中间段水平过渡
+        const midY = (line.y1 + line.y2) / 2;
+        const cpOffset = Math.abs(line.x2 - line.x1) * 0.4;
         return (
-          <path key={pHash}
-            d={`M ${cx} ${cy} Q ${cx} ${midY}, ${px} ${ROW_H}`}
-            style={lineStyle}
+          <path key={i}
+            d={`M ${line.x1} ${line.y1}
+                C ${line.x1} ${line.y1 + cpOffset},
+                  ${line.x2} ${line.y2 - cpOffset},
+                  ${line.x2} ${line.y2}`}
+            fill="none" stroke={line.color} strokeWidth={2} strokeLinecap="round"
           />
         );
       })}
 
-      {/* 提交圆点 — 外圈 */}
-      <circle
-        cx={cx} cy={cy}
-        r={commit.isBranchTip ? 6 : 4}
-        style={{
-          fill: commit.isBranchTip ? commit.color : 'var(--ant-color-bg-container, #fff)',
-          stroke: commit.color,
-          strokeWidth: 1.5,
-        }}
-      />
-      {/* 合并提交内点 */}
-      {commit.isMerge && (
-        <circle cx={cx} cy={cy} r={2}
-          style={{ fill: 'var(--ant-color-bg-container, #fff)' }}
-        />
-      )}
-      {/* 分支 tip 光晕 */}
-      {commit.isBranchTip && (
-        <circle cx={cx} cy={cy} r={8}
-          style={{ fill: 'none', stroke: commit.color, strokeWidth: 1, opacity: 0.2 }}
-        />
-      )}
+      {/* 圆点层 */}
+      {dots.map((dot, i) => (
+        <g key={i}>
+          {/* 分支 tip 光晕 */}
+          {dot.isTip && (
+            <circle cx={dot.x} cy={dot.y} r={DOT_R + 4}
+              fill="none" stroke={dot.color} strokeWidth={1.5} opacity={0.15}
+            />
+          )}
+          {/* 外圈 */}
+          <circle cx={dot.x} cy={dot.y}
+            r={dot.isTip ? DOT_R + 1 : DOT_R}
+            fill={dot.isTip ? dot.color : 'var(--ant-color-bg-container, #fff)'}
+            stroke={dot.color} strokeWidth={2}
+          />
+          {/* 合并内点 */}
+          {dot.isMerge && (
+            <circle cx={dot.x} cy={dot.y} r={2}
+              fill="var(--ant-color-bg-container, #fff)"
+            />
+          )}
+        </g>
+      ))}
     </svg>
   );
 }
 
 // ====== 提交行组件 ======
-function CommitRow({
-  commit, index, isSelected, query, maxLane, commits, onSelect,
-}: {
-  commit: LaneCommit; index: number; isSelected: boolean; query: string;
-  maxLane: number; commits: LaneCommit[]; onSelect: () => void;
-}) {
-  const highlightText = (text: string) => {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.split(regex).map((part, i) =>
-      regex.test(part) ? <span key={i} className={s.highlight}>{part}</span> : part
-    );
-  };
-
-  const graphWidth = (maxLane + 1) * LANE_W + 16;
-
-  return (
-    <div
-      className={isSelected ? s.commitRowSelected : s.commitRow}
-      role="button" tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
-    >
-      {/* 图形 */}
-      <div className={s.graphCell} style={{ width: graphWidth }}>
-        <CommitGraph commit={commit} maxLane={maxLane} commits={commits} />
+const CommitRow = ({ commit, isSelected, query, onSelect }: {
+  commit: LaneCommit; isSelected: boolean; query: string; onSelect: () => void;
+}) => (
+  <div
+    className={isSelected ? s.commitRowSelected : s.commitRow}
+    role="button" tabIndex={-1}
+    onClick={onSelect}
+  >
+    {/* 消息 + tag */}
+    <div className={s.commitBody}>
+      <div className={s.commitMsgRow}>
+        <span className={s.commitMsg}>
+          <HighlightText text={commit.message.split('\n')[0]} query={query} />
+        </span>
+        <div className={s.refTags}>
+          {commit.refs.filter(r => r.startsWith('tag: ')).map((ref, idx) => (
+            <span key={idx} className={s.refTag}
+              style={{ color: '#faad14', background: 'rgba(250,173,20,0.1)', border: '1px solid rgba(250,173,20,0.25)' }}>
+              {ref.replace('tag: ', '')}
+            </span>
+          ))}
+        </div>
       </div>
-
-      {/* 提交信息 */}
-      <div className={s.commitBody}>
-        {/* 消息 + tag 标签（分支已在图形中用颜色区分，不重复显示） */}
-        <div className={s.commitMsgRow}>
-          <span className={s.commitMsg}>{highlightText(commit.message.split('\n')[0])}</span>
-          <div className={s.refTags}>
-            {commit.refs
-              .filter(ref => ref.startsWith('tag: '))
-              .map((ref, idx) => {
-                const name = ref.replace('tag: ', '');
-                return (
-                  <span key={idx} className={s.refTag}
-                    style={{ color: '#faad14', background: 'rgba(250,173,20,0.1)', border: '1px solid rgba(250,173,20,0.25)' }}>
-                    {name}
-                  </span>
-                );
-              })}
-          </div>
-        </div>
-
-        {/* 作者 + 时间 + hash */}
-        <div className={s.commitMeta}>
-          <span className={s.commitAuthor}>{highlightText(commit.author)}</span>
-          <span className={s.commitDot} />
-          <span>{formatRelativeTime(commit.date)}</span>
-          <span className={s.commitDot} />
-          <span className={s.commitHash}>{highlightText(commit.hash.slice(0, 7))}</span>
-          <Tooltip title="复制完整 hash">
-            <Button type="text" size="small" className={s.copyBtn}
-              icon={<CopyOutlined />}
-              onClick={(e) => { e.stopPropagation(); copyText(commit.hash); }}
-            />
-          </Tooltip>
-        </div>
+      <div className={s.commitMeta}>
+        <span className={s.commitAuthor}><HighlightText text={commit.author} query={query} /></span>
+        <span className={s.commitDot} />
+        <span>{formatRelativeTime(commit.date)}</span>
+        <span className={s.commitDot} />
+        <span className={s.commitHash}><HighlightText text={commit.hash.slice(0, 7)} query={query} /></span>
+        <Tooltip title="复制完整 hash">
+          <Button type="text" size="small" className={s.copyBtn}
+            icon={<CopyOutlined />}
+            onClick={(e) => { e.stopPropagation(); copyText(commit.hash); }}
+          />
+        </Tooltip>
       </div>
     </div>
-  );
-}
+  </div>
+);
 
 // ====== 主组件 ======
 export function HistoryViewSourceTree() {
@@ -191,10 +196,7 @@ export function HistoryViewSourceTree() {
   const debouncedSearch = useDebounce(search, 300);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 初始加载全部提交
-  useEffect(() => {
-    if (repoInfo) loadLog(2000);
-  }, [repoInfo]);
+  useEffect(() => { if (repoInfo) loadLog(2000); }, [repoInfo]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
@@ -207,6 +209,7 @@ export function HistoryViewSourceTree() {
   }, [logEntries, debouncedSearch]);
 
   const { commits, maxLane } = useMemo(() => computeTopology(filtered), [filtered]);
+  const graphWidth = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
 
   // 选中时滚动到可视区域
   useEffect(() => {
@@ -216,58 +219,46 @@ export function HistoryViewSourceTree() {
     const rowTop = idx * ROW_H;
     const rowBottom = rowTop + ROW_H;
     const { scrollTop, clientHeight } = listRef.current;
-    if (rowTop < scrollTop) {
-      listRef.current.scrollTop = rowTop;
-    } else if (rowBottom > scrollTop + clientHeight) {
-      listRef.current.scrollTop = rowBottom - clientHeight;
-    }
+    if (rowTop < scrollTop) listRef.current.scrollTop = rowTop;
+    else if (rowBottom > scrollTop + clientHeight) listRef.current.scrollTop = rowBottom - clientHeight;
   }, [selectedCommit, commits]);
 
-  // 键盘上下箭头导航
+  // 键盘导航
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
     e.preventDefault();
     if (commits.length === 0) return;
-
     const currentIdx = selectedCommit ? commits.findIndex(c => c.hash === selectedCommit) : -1;
-    let nextIdx: number;
-    if (e.key === 'ArrowDown') {
-      nextIdx = currentIdx < commits.length - 1 ? currentIdx + 1 : 0;
-    } else {
-      nextIdx = currentIdx > 0 ? currentIdx - 1 : commits.length - 1;
-    }
+    const nextIdx = e.key === 'ArrowDown'
+      ? (currentIdx < commits.length - 1 ? currentIdx + 1 : 0)
+      : (currentIdx > 0 ? currentIdx - 1 : commits.length - 1);
     setSelectedCommit(commits[nextIdx].hash);
   }, [commits, selectedCommit, setSelectedCommit]);
 
   return (
     <div className={s.root}>
-      {/* 左侧：提交列表 */}
       <div className={s.listPanel}>
         {/* 工具栏 */}
         <div className={s.toolbar}>
-          <Input
-            size="small"
-            allowClear
-            placeholder="搜索提交..."
+          <Input size="small" allowClear placeholder="搜索提交..."
             prefix={<SearchOutlined style={{ color: '#bbb', fontSize: 12 }} />}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 220 }}
-            variant="borderless"
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            style={{ width: 220 }} variant="borderless"
           />
           <span className={s.toolbarCount}>
             {search ? `${filtered.length}/${logEntries.length}` : `${logEntries.length}`}
           </span>
           <Tooltip title="刷新">
             <Button size="small" type="text" icon={<ReloadOutlined />}
-              onClick={() => loadLog(2000)}
-              loading={logLoading}
+              onClick={() => loadLog(2000)} loading={logLoading}
             />
           </Tooltip>
         </div>
 
-        {/* 提交列表 */}
-        <div className={s.commitList} ref={listRef} tabIndex={0} onKeyDown={handleKeyDown}>
+        {/* 提交列表 — 相对定位容器，SVG 绝对定位覆盖 */}
+        <div className={s.commitList} ref={listRef} tabIndex={0} onKeyDown={handleKeyDown}
+          style={{ position: 'relative' }}
+        >
           {!repoInfo ? (
             <Empty description="未打开仓库" style={{ marginTop: 80 }} />
           ) : logLoading && logEntries.length === 0 ? (
@@ -275,23 +266,28 @@ export function HistoryViewSourceTree() {
           ) : commits.length === 0 ? (
             <Empty description={search ? '无匹配' : '暂无提交'} style={{ marginTop: 80 }} />
           ) : (
-            commits.map((commit, index) => (
-              <CommitRow
-                key={commit.hash}
-                commit={commit}
-                index={index}
-                isSelected={selectedCommit === commit.hash}
-                query={debouncedSearch.trim().toLowerCase()}
-                maxLane={maxLane}
-                commits={commits}
-                onSelect={() => setSelectedCommit(selectedCommit === commit.hash ? null : commit.hash)}
-              />
-            ))
+            <>
+              {/* 统一 SVG 画布 */}
+              <div style={{ width: graphWidth, height: commits.length * ROW_H, position: 'absolute', left: 0, top: 0 }}>
+                <CommitGraphCanvas commits={commits} maxLane={maxLane} />
+              </div>
+
+              {/* 提交行 — 左侧留出图形空间 */}
+              {commits.map((commit) => (
+                <div key={commit.hash} style={{ marginLeft: graphWidth }}>
+                  <CommitRow
+                    commit={commit}
+                    isSelected={selectedCommit === commit.hash}
+                    query={debouncedSearch.trim().toLowerCase()}
+                    onSelect={() => setSelectedCommit(selectedCommit === commit.hash ? null : commit.hash)}
+                  />
+                </div>
+              ))}
+            </>
           )}
         </div>
       </div>
 
-      {/* 右侧：提交详情 */}
       {selectedCommit && (
         <div className={s.detailPanel}>
           <SectionErrorBoundary fallbackTitle="提交详情加载失败">
