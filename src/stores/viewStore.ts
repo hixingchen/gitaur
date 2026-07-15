@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 /** 导航页面类型 */
-export type NavKey = 'home' | 'repos' | 'workspace' | 'pipeline' | 'branches' | 'history' | 'history-demo' | 'settings';
+export type NavKey = 'home' | 'repos' | 'workspace' | 'pipeline' | 'branches' | 'history' | 'settings';
 
 /** 轻量 UI 状态 — 选文件不触发 repoStore 重渲染 */
 interface ViewState {

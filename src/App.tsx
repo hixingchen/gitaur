@@ -16,7 +16,6 @@ const BranchPanel = lazy(() => import('./components/Layout/BranchPanel').then((m
 const PipelinePanel = lazy(() => import('./components/Pipeline/PipelinePanel').then((m) => ({ default: m.PipelinePanel })));
 const HistoryView = lazy(() => import('./components/Graph/HistoryViewSourceTree').then((m) => ({ default: m.HistoryViewSourceTree })));
 const SettingsPage = lazy(() => import('./components/Settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
-const HistoryViewDemo = lazy(() => import('./components/Graph/HistoryViewDemo').then((m) => ({ default: m.HistoryViewDemo })));
 import { useRepoStore } from './stores/repoStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useRepoManagerStore } from './stores/repoManagerStore';
@@ -470,9 +469,6 @@ function App() {
 
       case 'history':
         return <Suspense fallback={<PageSpinner />}><HistoryView /></Suspense>;
-
-      case 'history-demo':
-        return <Suspense fallback={<PageSpinner />}><HistoryViewDemo /></Suspense>;
 
       case 'settings':
         return <Suspense fallback={<PageSpinner />}><SettingsPage /></Suspense>;
