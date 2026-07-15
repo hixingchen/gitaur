@@ -23,6 +23,19 @@ export interface PipelineStep {
 /** 任务状态 */
 export type TaskStatus = 'pending' | 'running' | 'paused' | 'success' | 'cancelled';
 
+/** 流水线阶段 — 显式状态机，替代从步骤组合推断 */
+export type PipelinePhase =
+  | 'pending'           // 未开始
+  | 'developing'        // 开发中（分支已创建，等待用户操作）
+  | 'syncing'           // 同步中（自动）
+  | 'paused_sync_error' // 同步错误暂停（冲突/未提交）
+  | 'pushing'           // 推送中（自动）
+  | 'creating_mr'       // 创建 MR 中（自动）
+  | 'waiting_merge'     // 等待合并（MR 已创建）
+  | 'cleaning_up'       // 清理中（自动）
+  | 'finished'          // 完成
+  | 'delete_only';      // 仅可删除（错误状态）
+
 /** 同步策略 */
 export type SyncStrategy = 'rebase' | 'merge';
 
@@ -37,15 +50,16 @@ export interface MRSettings {
   targetBranch: string;
 }
 
-/** 流水线任务 */
 /** MR 轮询状态 */
 export type MrPollStatus = 'idle' | 'checking' | 'conflict' | 'pipeline_failed' | 'not_approved' | 'mergeable' | 'merged' | 'closed';
 
+/** 流水线任务 */
 export interface PipelineTask {
   id: string;
   name: string;
   branchName: string;
   status: TaskStatus;
+  phase: PipelinePhase;  // 显式阶段，按钮渲染直接读取
   steps: PipelineStep[];
   currentStep: number;
   syncStrategy: SyncStrategy;
@@ -189,6 +203,30 @@ async function persistTasks(tasksByRepo: Record<string, PipelineTask[]>): Promis
 
 let taskCounter = 0;
 
+/** 向后兼容：为没有 phase 字段的旧任务从步骤状态推断阶段 */
+function inferPhase(task: PipelineTask): PipelinePhase {
+  if (task.phase) return task.phase; // 已有 phase 字段，直接返回
+  if (task.status === 'success' || task.status === 'cancelled') return 'finished';
+  if (task.status === 'pending') return 'pending';
+
+  const develop = task.steps.find(s => s.key === 'develop');
+  const sync = task.steps.find(s => s.key === 'sync');
+  const push = task.steps.find(s => s.key === 'push');
+  const mr = task.steps.find(s => s.key === 'mr');
+  const wait = task.steps.find(s => s.key === 'wait');
+  const cleanup = task.steps.find(s => s.key === 'cleanup');
+
+  if (cleanup?.status === 'process') return 'cleaning_up';
+  if (wait?.status === 'process') return 'waiting_merge';
+  if (mr?.status === 'process') return 'creating_mr';
+  if (push?.status === 'process') return 'pushing';
+  if (sync?.status === 'process') return 'syncing';
+  if (sync?.status === 'error') return 'paused_sync_error';
+  if (push?.status === 'error') return 'delete_only';
+  if (mr?.status === 'error') return 'delete_only';
+  return 'developing';
+}
+
 /** 每仓库最多保留的已完成/已取消任务数 */
 const MAX_COMPLETED_TASKS = 50;
 
@@ -220,18 +258,20 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
         for (const [repo, tasks] of Object.entries(saved)) {
           const mapped = tasks.map((t) => {
+            // 向后兼容：为旧任务推断 phase
+            const withPhase = { ...t, phase: inferPhase(t) };
+
             // 检查是否有中断的清理任务
             const cleanupStep = t.steps.find((s) => s.key === 'cleanup');
             if (cleanupStep?.status === 'process') {
-              // 清理被中断，需要恢复
-              tasksToResumeCleanup.push({ repoPath: repo, task: t });
-              return t; // 保持原状态，稍后恢复
+              tasksToResumeCleanup.push({ repoPath: repo, task: withPhase });
+              return withPhase;
             }
 
             if (t.status === 'running') {
-              return { ...t, status: 'paused' as TaskStatus, error: '程序重启，任务已暂停' };
+              return { ...withPhase, status: 'paused' as TaskStatus, error: '程序重启，任务已暂停' };
             }
-            return t;
+            return withPhase;
           });
           restored[repo] = trimCompletedTasks(mapped);
         }
@@ -284,6 +324,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       name: params.name,
       branchName,
       status: 'pending',
+      phase: 'pending',
       steps: createSteps(),
       currentStep: -1,
       syncStrategy: params.syncStrategy || 'rebase',
@@ -350,6 +391,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'process', description: '请在工作区修改代码，完成后点击"提交代码"',
       });
       currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
       return;
 
@@ -360,6 +402,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'error', error: errorMsg, endTime: Date.now(),
       });
       currentTask = setTaskStatus(currentTask, 'paused', errorMsg);
+      currentTask = { ...currentTask, phase: 'delete_only' };
       updateTask(currentTask);
     }
   },
@@ -407,8 +450,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'commit', {
         status: 'finish', endTime: Date.now(), description: '已提交',
       });
-      // 提交完成后暂停，等待用户继续操作
+      // 提交完成后暂停，仍在开发阶段（可继续改或同步）
       currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
 
     } catch (e) {
@@ -423,6 +467,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       // 弹出提示，不改变步骤状态，用户可以继续修改代码
       currentTask = setTaskStatus(currentTask, 'paused', friendlyMsg);
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
     }
   },
@@ -431,12 +476,12 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   syncRemote: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
-    if (ctx.task.status === 'running') return; // 防止并发执行
+    if (ctx.task.status === 'running') return;
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
+    currentTask = { ...currentTask, phase: 'syncing' };
     const updateTask = makeUpdateTask(repoPath, taskId, set);
-
     updateTask(currentTask);
 
     try {
@@ -467,7 +512,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         currentTask = updateStep(currentTask, 'sync', {
           status: 'finish', endTime: Date.now(), description: `已${strategy === 'rebase' ? '变基' : '合并'}`,
         });
+        // 同步成功，进入开发阶段（用户可继续开发或推送）
         currentTask = setTaskStatus(currentTask, 'paused');
+        currentTask = { ...currentTask, phase: 'developing' };
         updateTask(currentTask);
 
       } catch (syncError) {
@@ -477,6 +524,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             status: 'error', error: '存在冲突，请手动解决后点击"继续同步"', endTime: Date.now(),
           });
           currentTask = setTaskStatus(currentTask, 'paused', '存在冲突');
+          currentTask = { ...currentTask, phase: 'paused_sync_error' };
           updateTask(currentTask);
           return;
         }
@@ -488,26 +536,16 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       let friendlyMsg = errorMsg;
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
         friendlyMsg = '存在冲突，请在工作区手动解决后点击"继续同步"';
-        currentTask = updateStep(currentTask, 'sync', {
-          status: 'error', error: friendlyMsg, endTime: Date.now(),
-        });
       } else if (errorMsg.includes('Could not resolve host')) {
         friendlyMsg = '网络连接失败，请检查网络';
-        currentTask = updateStep(currentTask, 'sync', {
-          status: 'error', error: friendlyMsg, endTime: Date.now(),
-        });
       } else if (errorMsg.includes('未提交的更改')) {
         friendlyMsg = '当前有未提交的更改，请先提交代码再同步';
-        currentTask = updateStep(currentTask, 'sync', {
-          status: 'error', error: friendlyMsg, endTime: Date.now(),
-        });
-      } else {
-        currentTask = updateStep(currentTask, 'sync', {
-          status: 'error', error: friendlyMsg, endTime: Date.now(),
-        });
       }
-
+      currentTask = updateStep(currentTask, 'sync', {
+        status: 'error', error: friendlyMsg, endTime: Date.now(),
+      });
       currentTask = setTaskStatus(currentTask, 'paused', friendlyMsg);
+      currentTask = { ...currentTask, phase: 'paused_sync_error' };
       updateTask(currentTask);
     }
   },
@@ -520,8 +558,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
+    currentTask = { ...currentTask, phase: 'pushing' };
     const updateTask = makeUpdateTask(repoPath, taskId, set);
-
     updateTask(currentTask);
 
     try {
@@ -536,7 +574,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'push', {
         status: 'finish', endTime: Date.now(), description: force ? '已强制推送' : '已推送',
       });
+      // 推送成功，进入开发阶段（用户可继续开发或创建 MR）
       currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
 
     } catch (e) {
@@ -555,6 +595,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'error', error: friendlyMsg, endTime: Date.now(),
       });
       currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'delete_only' };
       updateTask(currentTask);
     }
   },
@@ -567,8 +608,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
+    currentTask = { ...currentTask, phase: 'creating_mr' };
     const updateTask = makeUpdateTask(repoPath, taskId, set);
-
     updateTask(currentTask);
 
     try {
@@ -621,6 +662,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             // 进入等待合并步骤
             currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待 MR 合并' });
             currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+            currentTask = { ...currentTask, phase: 'waiting_merge' };
             updateTask(currentTask);
 
             return;
@@ -630,6 +672,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             message.error(`创建 MR 失败: ${mrError}`);
             currentTask = updateStep(currentTask, 'mr', { status: 'error', error: String(mrError), endTime: Date.now() });
             currentTask = setTaskStatus(currentTask, 'paused');
+            currentTask = { ...currentTask, phase: 'delete_only' };
             updateTask(currentTask);
             return;
           }
@@ -649,6 +692,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const errorMsg = String(e);
       message.error(errorMsg);
       currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'delete_only' };
       updateTask(currentTask);
     }
   },
@@ -891,7 +935,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
-  // 继续开发 — 同步完成后回到开发步骤
+  // 继续开发 — 回到开发步骤（保留已完成的步骤，只重置后续步骤）
   resumeDevelopment: (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
@@ -901,11 +945,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     updated = updateStep(updated, 'commit', { status: 'wait', error: undefined, description: undefined });
     updated = updateStep(updated, 'sync', { status: 'wait', error: undefined, description: undefined });
     updated = updateStep(updated, 'push', { status: 'wait', error: undefined, description: undefined });
-    // 重置 mr 和 wait 步骤，清除 MR 相关状态
     updated = updateStep(updated, 'mr', { status: 'wait', error: undefined, description: undefined });
     updated = updateStep(updated, 'wait', { status: 'wait', error: undefined, description: undefined });
     updated = { ...updated, mrPollStatus: undefined, mrIid: undefined, mrUrl: undefined };
     updated = setTaskStatus(updated, 'paused');
+    updated = { ...updated, phase: 'developing' };
 
     set((state) => {
       const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updated : t));
@@ -932,6 +976,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     currentTask = updateStep(currentTask, 'sync', { status: 'process', startTime: Date.now(), description: '正在同步远程...' });
     currentTask = { ...currentTask, mrPollStatus: undefined };
     currentTask = setTaskStatus(currentTask, 'running');
+    currentTask = { ...currentTask, phase: 'syncing' };
     updateTask(currentTask);
 
     try {
@@ -969,6 +1014,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'push', { status: 'finish', endTime: Date.now(), description: '已推送' });
       currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待 MR 合并' });
       currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+      currentTask = { ...currentTask, phase: 'waiting_merge' };
       updateTask(currentTask);
 
       await useRepoStore.getState().refreshStatus();
@@ -995,6 +1041,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }
 
       currentTask = setTaskStatus(currentTask, 'paused', friendlyMsg);
+      currentTask = { ...currentTask, phase: 'paused_sync_error' };
       updateTask(currentTask);
       message.error(friendlyMsg);
     }
@@ -1143,7 +1190,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'process', description: 'MR 已关闭',
       });
       currentTask = setTaskStatus(currentTask, 'paused', 'MR 已关闭');
-      currentTask = { ...currentTask, mrPollStatus: 'closed' as MrPollStatus };
+      currentTask = { ...currentTask, phase: 'waiting_merge' as PipelinePhase, mrPollStatus: 'closed' as MrPollStatus };
 
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? currentTask : t));
@@ -1182,7 +1229,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'process', error: undefined, description: '等待 MR 合并',
       });
       currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
-      currentTask = { ...currentTask, mrPollStatus: 'idle' as MrPollStatus };
+      currentTask = { ...currentTask, phase: 'waiting_merge' as PipelinePhase, mrPollStatus: 'idle' as MrPollStatus };
 
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? currentTask : t));
@@ -1217,7 +1264,7 @@ async function executeCleanup(
     status: 'process', startTime: Date.now(), description: '正在清理分支...',
   });
   task = setTaskStatus(task, 'running');
-  task = { ...task, mrPollStatus: 'merged' as MrPollStatus };
+  task = { ...task, phase: 'cleaning_up' as PipelinePhase, mrPollStatus: 'merged' as MrPollStatus };
 
   updateTaskInStore(task, taskId, repoPath);
 
@@ -1270,6 +1317,7 @@ async function executeCleanup(
       status: 'finish', endTime: Date.now(), description: '已清理',
     });
     task = setTaskStatus(task, 'success');
+    task = { ...task, phase: 'finished' as PipelinePhase };
     updateTaskInStore(task, taskId, repoPath);
     message.success('任务完成，分支已清理');
 
@@ -1280,6 +1328,7 @@ async function executeCleanup(
       status: 'error', error: String(e), endTime: Date.now(), description: '清理失败',
     });
     task = setTaskStatus(task, 'success');
+    task = { ...task, phase: 'finished' as PipelinePhase };
     updateTaskInStore(task, taskId, repoPath);
     message.warning('分支清理失败，但任务已完成');
   }

@@ -9,7 +9,7 @@ import {
   PullRequestOutlined, RocketOutlined, ClearOutlined,
   EditOutlined, SyncOutlined,
 } from '@ant-design/icons';
-import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus } from '../../stores/pipelineStore';
+import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus, type PipelinePhase, type MrPollStatus } from '../../stores/pipelineStore';
 
 const { Text } = Typography;
 
@@ -48,45 +48,6 @@ function getStepIcon(key: string) {
   }
 }
 
-type ActionState =
-  | 'pending' | 'developing' | 'sync_error_uncommitted' | 'sync_error_conflict'
-  | 'sync_done' | 'push_done' | 'waiting_merge_normal' | 'waiting_merge_conflict'
-  | 'waiting_merge_closed' | 'error_commit' | 'error_push' | 'error_mr'
-  | 'running' | 'finished' | 'delete_only';
-
-function getActionState(task: PipelineTask): ActionState {
-  const developStep = task.steps.find((s) => s.key === 'develop');
-  const commitStep = task.steps.find((s) => s.key === 'commit');
-  const syncStep = task.steps.find((s) => s.key === 'sync');
-  const pushStep = task.steps.find((s) => s.key === 'push');
-  const mrStep = task.steps.find((s) => s.key === 'mr');
-  const waitStep = task.steps.find((s) => s.key === 'wait');
-  const hasError = task.steps.some((s) => s.status === 'error');
-  const isRunning = task.status === 'running';
-  const isFinished = task.status === 'success' || task.status === 'cancelled';
-
-  if (task.status === 'pending') return 'pending';
-  if (developStep?.status === 'process' || (developStep?.status === 'finish' && syncStep?.status === 'wait')) return 'developing';
-  if (syncStep?.status === 'error') return (syncStep.error || '').includes('未提交的更改') ? 'sync_error_uncommitted' : 'sync_error_conflict';
-  if (syncStep?.status === 'finish' && (pushStep?.status === 'wait' || pushStep?.status === 'process')) return 'sync_done';
-  if (pushStep?.status === 'finish' && (mrStep?.status === 'wait' || mrStep?.status === 'process')) return 'push_done';
-  if (isRunning && waitStep?.status !== 'process') return 'running';
-  if (waitStep?.status === 'process') {
-    const ps = task.mrPollStatus;
-    if (ps === 'conflict' || ps === 'pipeline_failed' || ps === 'not_approved') return 'waiting_merge_conflict';
-    if (ps === 'closed') return 'waiting_merge_closed';
-    return 'waiting_merge_normal';
-  }
-  if (hasError) {
-    if (commitStep?.status === 'error') return 'error_commit';
-    if (pushStep?.status === 'error') return 'error_push';
-    if (mrStep?.status === 'error') return 'error_mr';
-    return 'delete_only';
-  }
-  if (isFinished) return 'finished';
-  return 'delete_only';
-}
-
 interface PipelineBarProps {
   task: PipelineTask;
 }
@@ -112,15 +73,18 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const [commitMessage, setCommitMessage] = useState('');
 
   const currentStepIndex = task.currentStep >= 0 ? task.currentStep : 0;
-  const actionState = getActionState(task);
+  const phase: PipelinePhase = task.phase || 'developing';
+  const mrPoll = task.mrPollStatus;
 
   const DeleteBtn = () => (
     <Button danger icon={<DeleteOutlined />} size="small"
       onClick={() => void setDeleteConfirm(true)}>删除任务</Button>
   );
 
+  /** 根据 phase 直接渲染按钮 — 每个 phase 有明确的主/次操作 */
   const renderActions = () => {
-    switch (actionState) {
+    switch (phase) {
+      // ====== 未开始 ======
       case 'pending':
         return (
           <Space size={6}>
@@ -129,83 +93,112 @@ export function PipelineBar({ task }: PipelineBarProps) {
             <DeleteBtn />
           </Space>
         );
-      case 'developing':
+
+      // ====== 开发中（分支已创建，用户可操作） ======
+      case 'developing': {
+        const commitDone = task.steps.find(s => s.key === 'commit')?.status === 'finish';
+        const syncDone = task.steps.find(s => s.key === 'sync')?.status === 'finish';
+        const pushDone = task.steps.find(s => s.key === 'push')?.status === 'finish';
         return (
           <Space size={6}>
             <Button type="primary" icon={<EditOutlined />} size="small"
               onClick={() => setCommitModalOpen(true)}>提交代码</Button>
-            <Button icon={<ReloadOutlined />} size="small"
-              onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'sync_error_uncommitted':
-        return (
-          <Space size={6}>
-            <Button type="primary" icon={<EditOutlined />} size="small"
-              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'sync_error_conflict':
-        return (
-          <Space size={6}>
-            <Button type="primary" icon={<ReloadOutlined />} size="small"
-              onClick={() => syncRemote(task.id)} loading={loading}>继续同步</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'sync_done':
-        return (
-          <Space size={6}>
-            <Button icon={<EditOutlined />} size="small"
-              onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
-            <Button type="primary" icon={<CloudUploadOutlined />} size="small"
-              onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'push_done':
-        return (
-          <Space size={6}>
-            <Button icon={<EditOutlined />} size="small"
-              onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
-            <Button type="primary" icon={<PullRequestOutlined />} size="small"
-              onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'running':
-        return <DeleteBtn />;
-      case 'waiting_merge_conflict': {
-        const ps = task.mrPollStatus;
-        const sm: Record<string, { l: string; c: string }> = {
-          conflict: { l: '⚠️ 冲突', c: 'error' },
-          pipeline_failed: { l: '❌ 流水线失败', c: 'warning' },
-          not_approved: { l: '⏳ 等待审批', c: 'processing' },
-        };
-        const { l, c } = sm[ps!] || { l: '未知', c: 'default' };
-        return (
-          <Space size={6}>
-            <Tag color={c}>{l}</Tag>
-            {ps === 'conflict' ? (
-              <Button type="primary" icon={<SyncOutlined />} size="small"
-                onClick={() => resumeFromConflict(task.id)} loading={loading}>同步远程</Button>
-            ) : (
-              <>
-                <Button type="primary" icon={<EditOutlined />} size="small"
-                  onClick={() => setCommitModalOpen(true)}>提交代码</Button>
-                <Button icon={<CloudUploadOutlined />} size="small"
-                  onClick={() => pushRemote(task.id)} loading={loading}>推送</Button>
-              </>
+            {!syncDone && (
+              <Button icon={<ReloadOutlined />} size="small"
+                onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
             )}
-            <Button icon={<PullRequestOutlined />} size="small"
-              onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+            {syncDone && !pushDone && (
+              <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+                onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
+            )}
+            {pushDone && (
+              <Button type="primary" icon={<PullRequestOutlined />} size="small"
+                onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+            )}
             <DeleteBtn />
           </Space>
         );
       }
-      case 'waiting_merge_closed':
+
+      // ====== 同步中（自动） ======
+      case 'syncing':
+      case 'pushing':
+      case 'creating_mr':
+      case 'cleaning_up':
+        return <DeleteBtn />;
+
+      // ====== 同步错误暂停 ======
+      case 'paused_sync_error': {
+        const isConflict = (task.error || '').includes('冲突');
+        return (
+          <Space size={6}>
+            {isConflict ? (
+              <Button type="primary" icon={<SyncOutlined />} size="small"
+                onClick={() => syncRemote(task.id)} loading={loading}>继续同步</Button>
+            ) : (
+              <Button type="primary" icon={<EditOutlined />} size="small"
+                onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            )}
+            <Button icon={<EditOutlined />} size="small"
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <DeleteBtn />
+          </Space>
+        );
+      }
+
+      // ====== 等待合并 ======
+      case 'waiting_merge':
+        return renderWaitingMergeActions();
+
+      // ====== 完成 ======
+      case 'finished':
+        return <DeleteBtn />;
+
+      // ====== 仅可删除 ======
+      case 'delete_only':
+      default:
+        return <DeleteBtn />;
+    }
+  };
+
+  /** 等待合并阶段的按钮 — 根据 mrPollStatus 细分 */
+  const renderWaitingMergeActions = () => {
+    switch (mrPoll) {
+      case 'conflict':
+        return (
+          <Space size={6}>
+            <Tag color="error">⚠️ 冲突</Tag>
+            <Button type="primary" icon={<SyncOutlined />} size="small"
+              onClick={() => resumeFromConflict(task.id)} loading={loading}>同步远程</Button>
+            <DeleteBtn />
+          </Space>
+        );
+
+      case 'pipeline_failed':
+        return (
+          <Space size={6}>
+            <Tag color="warning">❌ 流水线失败</Tag>
+            <Button type="primary" icon={<EditOutlined />} size="small"
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <Button icon={<CloudUploadOutlined />} size="small"
+              onClick={() => pushRemote(task.id)} loading={loading}>推送</Button>
+            <DeleteBtn />
+          </Space>
+        );
+
+      case 'not_approved':
+        return (
+          <Space size={6}>
+            <Tag color="processing">⏳ 等待审批</Tag>
+            <Button type="primary" icon={<EditOutlined />} size="small"
+              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <Button icon={<CloudUploadOutlined />} size="small"
+              onClick={() => pushRemote(task.id)} loading={loading}>推送</Button>
+            <DeleteBtn />
+          </Space>
+        );
+
+      case 'closed':
         return (
           <Space size={6}>
             <Tag color="default">🚫 MR 已关闭</Tag>
@@ -216,12 +209,11 @@ export function PipelineBar({ task }: PipelineBarProps) {
             <DeleteBtn />
           </Space>
         );
-      case 'waiting_merge_normal': {
-        const ps = task.mrPollStatus;
-        const sl = ps === 'mergeable' ? '🟢 可合并' : '⏳ 等待合并';
+
+      case 'mergeable':
         return (
           <Space size={6}>
-            <Tag color="processing">{sl}</Tag>
+            <Tag color="processing">🟢 可合并</Tag>
             {task.mrUrl && (
               <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
                 <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
@@ -232,35 +224,21 @@ export function PipelineBar({ task }: PipelineBarProps) {
             <DeleteBtn />
           </Space>
         );
-      }
-      case 'error_commit':
-        return (
-          <Space size={6}>
-            <Button type="primary" icon={<EditOutlined />} size="small"
-              onClick={() => commitCode(task.id)} loading={loading}>重新提交</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'error_push':
-        return (
-          <Space size={6}>
-            <Button type="primary" icon={<CloudUploadOutlined />} size="small"
-              onClick={() => pushRemote(task.id)} loading={loading}>重新推送</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'error_mr':
-        return (
-          <Space size={6}>
-            <Button type="primary" icon={<PullRequestOutlined />} size="small"
-              onClick={() => createMR(task.id)} loading={loading}>重新创建MR</Button>
-            <DeleteBtn />
-          </Space>
-        );
-      case 'finished':
-      case 'delete_only':
+
       default:
-        return <DeleteBtn />;
+        return (
+          <Space size={6}>
+            <Tag color="processing">⏳ 等待合并</Tag>
+            {task.mrUrl && (
+              <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
+                <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
+              </a>
+            )}
+            <Button danger icon={<CloseCircleOutlined />} size="small"
+              onClick={() => void setCloseMRConfirm(true)}>关闭MR</Button>
+            <DeleteBtn />
+          </Space>
+        );
     }
   };
 
