@@ -1,0 +1,126 @@
+/* ====== 顶部信息栏 ====== */
+.topBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+/* ====== 步骤条容器 ====== */
+.barContainer {
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+}
+
+.barHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+/* ====== 主内容区 ====== */
+.mainContent {
+  display: flex;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+}
+
+.fileTreePanel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.resizeHandle {
+  width: 8px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.resizeGrip {
+  width: 2px;
+  height: 36px;
+  border-radius: 1px;
+}
+
+.diffPanel {
+  flex: 1;
+  min-width: 0;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ====== 等待合并页 ====== */
+.waitingPage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--ant-color-border-secondary);
+}
+
+/* ====== 空/完成页 ====== */
+.statusPage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  gap: 20px;
+}
+
+/* ====== 任务选择器下拉 ====== */
+.newTaskOption {
+  padding: 4px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ====== 创建任务表单 ====== */
+.formSection {
+  padding: 12px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+}
+
+.formRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.formRow:last-child {
+  margin-bottom: 0;
+}
+
+/* ====== 警告提示 ====== */
+.warningBox {
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* ====== 目标分支说明 ====== */
+.targetBranchInfo {
+  margin-bottom: 16px;
+}
+.targetBranchHint {
+  font-size: 12px;
+  margin-top: 4px;
+}

@@ -27,8 +27,12 @@ export function defaultAlias(path: string): string {
 }
 
 /** 获取或创建持久化 store 实例 — 复用避免重复加载 */
+let _storeInstance: Store | null = null;
 async function ensureStore(): Promise<Store> {
-  return load('repos.json', { autoSave: false, defaults: {} });
+  if (!_storeInstance) {
+    _storeInstance = await load('repos.json', { autoSave: false, defaults: {} });
+  }
+  return _storeInstance;
 }
 
 async function persist(repos: SavedRepo[], lastRepoPath: string | null, store?: Store | null): Promise<Store> {

@@ -131,7 +131,7 @@ function makeUpdateTask(
     set((state) => {
       const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updated : t));
       const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-      persistTasks(newTasksByRepo, state._store);
+      persistTasks(newTasksByRepo);
       return {
         tasksByRepo: newTasksByRepo,
         currentTask: state.currentTask?.id === taskId ? updated : state.currentTask,
@@ -169,7 +169,7 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null;
 let _pendingData: Record<string, PipelineTask[]> | null = null;
 let _cleanupResumeTimers: ReturnType<typeof setTimeout>[] = [];
 
-async function persistTasks(tasksByRepo: Record<string, PipelineTask[]>, store?: Store | null): Promise<void> {
+async function persistTasks(tasksByRepo: Record<string, PipelineTask[]>): Promise<void> {
   _pendingData = tasksByRepo;
   if (_persistTimer) clearTimeout(_persistTimer);
   _persistTimer = setTimeout(async () => {
@@ -178,7 +178,7 @@ async function persistTasks(tasksByRepo: Record<string, PipelineTask[]>, store?:
     const data = _pendingData;
     _pendingData = null;
     try {
-      const s = store || await ensureStore();
+      const s = await ensureStore(); // 始终使用最新实例，避免闭包捕获旧 store
       await s.set('tasksByRepo', data);
       await s.save();
     } catch (e) {
@@ -303,7 +303,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const repoTasks = trimCompletedTasks([...(state.tasksByRepo[repoPath] || []), task]);
       const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
       // 异步持久化
-      persistTasks(newTasksByRepo, state._store);
+      persistTasks(newTasksByRepo);
       return { tasksByRepo: newTasksByRepo, currentTask: task };
     });
 
@@ -368,6 +368,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   commitCode: async (taskId: string, message?: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
@@ -430,6 +431,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   syncRemote: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
@@ -514,6 +516,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   pushRemote: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
@@ -560,6 +563,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   createMR: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
@@ -653,6 +657,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   checkMergeStatus: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     let currentTask = setTaskStatus(task, 'running');
@@ -750,7 +755,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).filter((t) => t.id !== taskId);
         const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo, state._store);
+        persistTasks(newTasksByRepo);
         return {
           tasksByRepo: newTasksByRepo,
           currentTask: state.currentTask?.id === taskId ? null : state.currentTask,
@@ -765,7 +770,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).filter((t) => t.id !== taskId);
         const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo, state._store);
+        persistTasks(newTasksByRepo);
         return {
           tasksByRepo: newTasksByRepo,
           currentTask: state.currentTask?.id === taskId ? null : state.currentTask,
@@ -787,6 +792,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   checkAndCleanTasks: async () => {
     const repoPath = getRepoPath();
     if (!repoPath) return;
+
+    // 清理非当前仓库且全部任务已完成的旧条目
+    set((state) => {
+      const pruned: Record<string, PipelineTask[]> = {};
+      for (const [key, tasks] of Object.entries(state.tasksByRepo)) {
+        if (key === repoPath || tasks.some((t) => t.status === 'pending' || t.status === 'running' || t.status === 'paused')) {
+          pruned[key] = tasks;
+        }
+      }
+      if (Object.keys(pruned).length < Object.keys(state.tasksByRepo).length) {
+        persistTasks(pruned);
+        return { tasksByRepo: pruned };
+      }
+      return {};
+    });
 
     const { tasksByRepo } = get();
     const tasks = tasksByRepo[repoPath] || [];
@@ -832,7 +852,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const newTasksByRepo = { ...tasksByRepo, [repoPath]: remainingTasks };
 
       set((state) => {
-        persistTasks(newTasksByRepo, state._store);
+        persistTasks(newTasksByRepo);
         return {
           tasksByRepo: newTasksByRepo,
           currentTask: state.currentTask && removeIds.has(state.currentTask.id) ? null : state.currentTask,
@@ -862,7 +882,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         set((state) => {
           const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? resetTask : t));
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-          persistTasks(newTasksByRepo, state._store);
+          persistTasks(newTasksByRepo);
           return { tasksByRepo: newTasksByRepo };
         });
       }
@@ -890,7 +910,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set((state) => {
       const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updated : t));
       const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-      persistTasks(newTasksByRepo, state._store);
+      persistTasks(newTasksByRepo);
       return {
         tasksByRepo: newTasksByRepo,
         currentTask: state.currentTask?.id === taskId ? updated : state.currentTask,
@@ -902,6 +922,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   resumeFromConflict: async (taskId: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
 
     const updateTask = makeUpdateTask(repoPath, taskId, set);
@@ -1045,7 +1066,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             t.id === taskId ? updatedTask : t
           );
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-          persistTasks(newTasksByRepo, state._store);
+          persistTasks(newTasksByRepo);
           return {
             tasksByRepo: newTasksByRepo,
             currentTask: state.currentTask?.id === taskId ? updatedTask : state.currentTask,
@@ -1092,7 +1113,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         set((state) => {
           const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? pausedTask : t));
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-          persistTasks(newTasksByRepo, state._store);
+          persistTasks(newTasksByRepo);
           return { tasksByRepo: newTasksByRepo };
         });
       }
@@ -1127,7 +1148,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? currentTask : t));
         const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo, state._store);
+        persistTasks(newTasksByRepo);
         return {
           tasksByRepo: newTasksByRepo,
           currentTask: state.currentTask?.id === taskId ? currentTask : state.currentTask,
@@ -1166,7 +1187,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set((state) => {
         const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? currentTask : t));
         const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo, state._store);
+        persistTasks(newTasksByRepo);
         return {
           tasksByRepo: newTasksByRepo,
           currentTask: state.currentTask?.id === taskId ? currentTask : state.currentTask,
@@ -1271,7 +1292,7 @@ function updateTaskInStore(updatedTask: PipelineTask, taskId: string, repoPath: 
       t.id === taskId ? updatedTask : t
     );
     const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-    persistTasks(newTasksByRepo, state._store);
+    persistTasks(newTasksByRepo);
     return {
       tasksByRepo: newTasksByRepo,
       currentTask: state.currentTask?.id === taskId ? updatedTask : state.currentTask,

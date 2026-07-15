@@ -1,0 +1,81 @@
+/* ====== 布局 ====== */
+.flexRow { display: flex; align-items: center; }
+.flexCol { display: flex; flex-direction: column; }
+.flex1 { flex: 1; min-width: 0; }
+.gap4 { gap: 4px; }
+.gap6 { gap: 6px; }
+.gap8 { gap: 8px; }
+.gap12 { gap: 12px; }
+.gap16 { gap: 16px; }
+
+/* ====== 容器 ====== */
+.container { height: 100%; display: flex; flex-direction: column; }
+.scrollArea { flex: 1; overflow: auto; }
+.card {
+  border-radius: 10px;
+  border: 1px solid var(--ant-color-border-secondary, #d9d9d9);
+  background: var(--ant-color-bg-container, #fff);
+}
+.panel {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ant-color-border-secondary, #d9d9d9);
+  background: var(--ant-color-bg-container, #fff);
+}
+
+/* ====== 文本 ====== */
+.mono { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace; }
+.textEllipsis {
+  overflow: hidden;
+  textOverflow: ellipsis;
+  whiteSpace: 'nowrap';
+}
+.textSm { font-size: 12px; }
+.textXs { font-size: 11px; }
+.textXxs { font-size: 10px; }
+.textSecondary { color: var(--ant-color-text-secondary, #8c8c8c); }
+.textTertiary { color: var(--ant-color-text-tertiary, #bfbfbf); }
+.textBold { font-weight: 600; }
+
+/* ====== 标签 ====== */
+.tagSm {
+  margin: 0;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+}
+
+/* ====== 列表项 ====== */
+.listItem {
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.listItem:hover {
+  background: var(--ant-color-fill-tertiary, rgba(0, 0, 0, 0.04));
+}
+.listItemSelected {
+  background: var(--ant-color-primary-bg, #e6f4ff);
+  border: 1px solid var(--ant-color-primary-border, #91caff);
+}
+
+/* ====== 工具栏 ====== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+/* ====== 空状态 ====== */
+.emptyCenter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  gap: 20px;
+}

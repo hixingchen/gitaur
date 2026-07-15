@@ -33,10 +33,10 @@ export class ErrorBoundary extends Component<Props, State> {
       return;
     }
 
-    // 自动恢复：延迟重置状态
+    // 自动恢复：延迟 2 秒重置状态（太短会形成闪烁循环）
     this.resetTimer = setTimeout(() => {
       this.setState({ hasError: false, errorCount: nextCount });
-    }, 200);
+    }, 2000);
   }
 
   componentWillUnmount() {

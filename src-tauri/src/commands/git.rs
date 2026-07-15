@@ -93,6 +93,13 @@ pub struct CommitParams {
 #[tauri::command]
 pub fn git_commit(repo_path: String, params: CommitParams) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    // 验证提交消息长度
+    if params.message.len() > 10000 {
+        return Err("提交消息过长（超过 10000 字符）".to_string());
+    }
+    if params.message.trim().is_empty() {
+        return Err("提交消息不能为空".to_string());
+    }
     // 验证文件路径防止路径穿越
     for file in &params.files {
         validate_git_file_path(file)?;
@@ -417,7 +424,7 @@ fn validate_clone_url(url: &str) -> Result<(), String> {
         return Ok(());
     }
     if url.starts_with("git://") {
-        return Ok(());
+        return Err("git:// 协议不安全（明文传输），请使用 https:// 或 ssh://".to_string());
     }
     // SSH shorthand: git@host:path（不含 ://）
     if url.contains('@') && !url.contains("://") {
@@ -576,19 +583,20 @@ pub fn read_working_file(repo_path: String, file_path: String) -> Result<String,
 
 /// Detect if a file is GBK encoded by checking if valid UTF-8 fails.
 /// 只读前 8KB 判断编码，避免读取整个文件浪费内存。
-fn detect_encoding(path: &std::path::Path) -> &'static str {
+fn detect_encoding(path: &std::path::Path) -> Result<&'static str, String> {
     use std::io::Read;
     const SAMPLE_SIZE: usize = 8192;
-    if let Ok(mut f) = std::fs::File::open(path) {
-        let mut buf = vec![0u8; SAMPLE_SIZE];
-        if let Ok(n) = f.read(&mut buf) {
-            buf.truncate(n);
-            if std::str::from_utf8(&buf).is_err() {
-                return "gbk";
-            }
-        }
+    let mut f = std::fs::File::open(path)
+        .map_err(|e| format!("读取文件失败（编码检测）: {}", e))?;
+    let mut buf = vec![0u8; SAMPLE_SIZE];
+    let n = f.read(&mut buf)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    buf.truncate(n);
+    if std::str::from_utf8(&buf).is_err() {
+        Ok("gbk")
+    } else {
+        Ok("utf-8")
     }
-    "utf-8"
 }
 
 #[tauri::command]
@@ -598,7 +606,7 @@ pub fn write_working_file(repo_path: String, file_path: String, content: String)
 
     // If file exists, detect and preserve original encoding
     if full_path.exists() {
-        let encoding = detect_encoding(&full_path);
+        let encoding = detect_encoding(&full_path)?;
         if encoding == "gbk" {
             let (encoded, _, _) = encoding_rs::GBK.encode(&content);
             std::fs::write(&full_path, encoded.as_ref())
@@ -676,6 +684,7 @@ pub fn git_branch_rename(
     old_name: Option<String>,
     new_name: String,
 ) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     // 验证分支名防止注入
     validate_ref(&new_name)?;
     if let Some(ref old) = old_name {

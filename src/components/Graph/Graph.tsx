@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { Empty, Spin } from 'antd';
 import { useRepoStore } from '../../stores/repoStore';
+import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
+import type { LaneCommit } from '../../utils/topology';
 import type { LogEntry } from '../../types/git';
 
 interface GraphProps {
@@ -13,114 +15,7 @@ const LANE_W = 22;
 const DOT_R = 4;
 const PAD_L = 18;
 const PAD_TOP = 12;
-const COLORS = ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#722ed1', '#13c2c2', '#eb2f96', '#f759ab', '#fa8c16', '#2f54eb'];
-
-/* ---- 拓扑计算：为每个 commit 分配 lane ---- */
-interface LaneCommit {
-  hash: string;
-  lane: number;
-  color: string;
-  parents: string[];
-  refs: string[];
-  message: string;
-  author: string;
-  date: string;
-}
-
-function computeTopology(entries: LogEntry[]): { commits: LaneCommit[]; maxLane: number } {
-  if (entries.length === 0) return { commits: [], maxLane: 0 };
-
-  // Reverse to oldest-first for lane assignment
-  const reversed = [...entries].reverse();
-
-  // Map: commit hash → lane number
-  const laneOf = new Map<string, number>();
-  // Map: commit hash → color
-  const colorOf = new Map<string, string>();
-  let nextLane = 0;
-  const freeLanes: number[] = [];
-
-  function allocLane(): { lane: number; color: string } {
-    const lane = freeLanes.length > 0 ? freeLanes.shift()! : nextLane++;
-    return { lane, color: COLORS[lane % COLORS.length] };
-  }
-
-  // 预构建 parent -> children 映射，避免 O(n²) 查找
-  const childrenMap = new Map<string, typeof entries>();
-  for (const entry of entries) {
-    for (const parentHash of entry.parents) {
-      const list = childrenMap.get(parentHash);
-      if (list) {
-        list.push(entry);
-      } else {
-        childrenMap.set(parentHash, [entry]);
-      }
-    }
-  }
-
-  // Process oldest-first
-  for (const commit of reversed) {
-    const children = childrenMap.get(commit.hash) || [];
-
-    // Choose lane: prefer parent's lane if committed to the same branch
-    let lane: number;
-    let color: string;
-
-    if (children.length === 0) {
-      // Leaf commit (newest tip) — needs new lane
-      const a = allocLane();
-      lane = a.lane; color = a.color;
-    } else if (children.length === 1) {
-      // Single child — inherit its lane
-      const childLane = laneOf.get(children[0].hash);
-      if (childLane !== undefined) {
-        lane = childLane;
-        color = colorOf.get(children[0].hash)!;
-      } else {
-        const a = allocLane();
-        lane = a.lane; color = a.color;
-      }
-    } else {
-      // Multiple children (this is a branch point) — keep one child's lane, rest are branches
-      const childLane = laneOf.get(children[0].hash);
-      if (childLane !== undefined) {
-        lane = childLane;
-        color = colorOf.get(children[0].hash)!;
-      } else {
-        const a = allocLane();
-        lane = a.lane; color = a.color;
-      }
-    }
-
-    // If commit is a merge (2+ parents), free up the merged parent lanes
-    if (commit.parents.length > 1) {
-      for (let i = 1; i < commit.parents.length; i++) {
-        const parentLane = laneOf.get(commit.parents[i]);
-        if (parentLane !== undefined && parentLane !== lane) {
-          freeLanes.push(parentLane);
-        }
-      }
-    }
-
-    laneOf.set(commit.hash, lane);
-    colorOf.set(commit.hash, color);
-  }
-
-  // Build result in original order (newest first)
-  const commits = entries.map(e => ({
-    hash: e.hash,
-    lane: laneOf.get(e.hash) ?? 0,
-    color: colorOf.get(e.hash) ?? COLORS[0],
-    parents: e.parents,
-    refs: e.refs,
-    message: e.message,
-    author: e.author,
-    date: e.date,
-  }));
-
-  const maxLane = Math.max(1, nextLane);
-  return { commits, maxLane };
-}
+const COLORS = BRANCH_COLORS;
 
 export function Graph({ entries }: GraphProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -343,7 +238,7 @@ export function Graph({ entries }: GraphProps = {}) {
     <div ref={containerRef} style={{
       flex: 1, minHeight: totalHeight, position: 'relative', overflow: 'auto',
     }}>
-      <canvas ref={canvasRef} onClick={handleClick} style={{ cursor: 'pointer', display: 'block' }} />
+      <canvas ref={canvasRef} onClick={handleClick} role="img" aria-label="Git 提交历史图形" style={{ cursor: 'pointer', display: 'block' }} />
     </div>
   );
 }

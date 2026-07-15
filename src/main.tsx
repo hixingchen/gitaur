@@ -3,8 +3,13 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import './index.css';
 
-// 禁用默认右键菜单
-document.addEventListener('contextmenu', (e) => e.preventDefault());
+// 禁用默认右键菜单（仅限非输入元素，保留文本输入/编辑器的右键菜单）
+document.addEventListener('contextmenu', (e) => {
+  const tag = (e.target as HTMLElement)?.tagName;
+  if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !(e.target as HTMLElement)?.closest('[contenteditable="true"]')) {
+    e.preventDefault();
+  }
+});
 
 // 全局错误捕获，防止白屏
 window.onerror = (msg) => {

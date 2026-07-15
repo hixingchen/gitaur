@@ -1,0 +1,129 @@
+/* ====== 通用 ====== */
+.flexRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+}
+.tagSm {
+  margin: 0;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 4px;
+}
+
+/* ====== 当前分支信息区 ====== */
+.currentBranchInfo {
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+
+.currentBranchHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.upstreamInfo {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+/* ====== 搜索栏 ====== */
+.searchBar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.searchInput {
+  flex: 1;
+  border-radius: 8px;
+}
+
+/* ====== 分支列表标题 ====== */
+.sectionTitle {
+  font-size: 12px;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+/* ====== 本地分支项 ====== */
+.branchRow {
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.branchRow:hover {
+  background: var(--ant-color-fill-tertiary, rgba(0, 0, 0, 0.04));
+}
+.branchRowCurrent {
+  cursor: default;
+  composes: branchRow;
+}
+
+.branchName {
+  flex: 1;
+  min-width: 0;
+}
+
+.branchNameText {
+  font-weight: 400;
+  font-size: 13px;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.branchNameTextCurrent {
+  composes: branchNameText;
+  font-weight: 600;
+}
+
+.upstreamText {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+/* ====== 远程分支项 ====== */
+.remoteBranchRow {
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  cursor: default;
+  transition: background 0.15s;
+}
+.remoteBranchRow:hover {
+  background: var(--ant-color-fill-tertiary, rgba(0, 0, 0, 0.04));
+}
+
+.remoteBranchName {
+  flex: 1;
+  font-size: 12px;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ====== 弹窗说明 ====== */
+.tagHelp {
+  margin-top: 12px;
+  font-size: 12px;
+}
+.tagHelp div {
+  margin-bottom: 2px;
+}

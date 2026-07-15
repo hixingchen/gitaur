@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, memo, useCallback, useRef, lazy, Suspense } from 'react';
+import { useEffect, useState, useMemo, memo, useCallback, lazy, Suspense } from 'react';
 import './App.css';
 import { ConfigProvider, theme, App as AntApp, Button, Input, Modal, Space, message, Typography, Popover, Spin } from 'antd';
 import { FolderOpenOutlined, PlusOutlined, SearchOutlined, EditOutlined, MoreOutlined, DeleteOutlined } from '@ant-design/icons';
@@ -9,13 +9,14 @@ import { OpenRepoModal } from './components/Toolbar/OpenRepoModal';
 import { CloneModal } from './components/Toolbar/CloneModal';
 import { BranchModal } from './components/Toolbar/BranchModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { useDebounce } from './hooks/useDebounce';
 
 // 懒加载页面组件
 const BranchPanel = lazy(() => import('./components/Layout/BranchPanel').then((m) => ({ default: m.BranchPanel })));
-const MRPage = lazy(() => import('./components/MergeRequest/MRPage').then((m) => ({ default: m.MRPage })));
 const PipelinePanel = lazy(() => import('./components/Pipeline/PipelinePanel').then((m) => ({ default: m.PipelinePanel })));
-const HistoryView = lazy(() => import('./components/Graph/HistoryView').then((m) => ({ default: m.HistoryView })));
+const HistoryView = lazy(() => import('./components/Graph/HistoryViewSourceTree').then((m) => ({ default: m.HistoryViewSourceTree })));
 const SettingsPage = lazy(() => import('./components/Settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const HistoryViewDemo = lazy(() => import('./components/Graph/HistoryViewDemo').then((m) => ({ default: m.HistoryViewDemo })));
 import { useRepoStore } from './stores/repoStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useRepoManagerStore } from './stores/repoManagerStore';
@@ -45,6 +46,8 @@ const RepoCard = memo(function RepoCard({
   return (
     <div
       className="repo-card"
+      role="button"
+      tabIndex={0}
       style={{
         padding: 16, borderRadius: 8,
         border: '1px solid var(--ant-color-border-secondary, #303030)',
@@ -53,6 +56,7 @@ const RepoCard = memo(function RepoCard({
         display: 'flex', flexDirection: 'column', gap: 8,
       }}
       onClick={() => { if (!popoverOpen) onSwitch(repo); }}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!popoverOpen) onSwitch(repo); } }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <FolderOpenOutlined style={{ color: '#1677ff', fontSize: 20, flexShrink: 0 }} />
@@ -132,17 +136,9 @@ function App() {
   const [cloneModalVisible, setCloneModalVisible] = useState(false);
   const [branchModalVisible, setBranchModalVisible] = useState(false);
   const [repoSearch, setRepoSearch] = useState('');
-  const [debouncedRepoSearch, setDebouncedRepoSearch] = useState('');
-  const repoSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedRepoSearch = useDebounce(repoSearch, 300);
   const [renameTarget, setRenameTarget] = useState<SavedRepo | null>(null);
   const [renameValue, setRenameValue] = useState('');
-
-  // 防抖：300ms 内多次输入只执行最后一次
-  useEffect(() => {
-    if (repoSearchDebounceRef.current) clearTimeout(repoSearchDebounceRef.current);
-    repoSearchDebounceRef.current = setTimeout(() => setDebouncedRepoSearch(repoSearch), 300);
-    return () => { if (repoSearchDebounceRef.current) clearTimeout(repoSearchDebounceRef.current); };
-  }, [repoSearch]);
 
   // Settings
   const initSettings = useSettingsStore((s) => s.init);
@@ -475,8 +471,8 @@ function App() {
       case 'history':
         return <Suspense fallback={<PageSpinner />}><HistoryView /></Suspense>;
 
-      case 'mergerequests':
-        return <Suspense fallback={<PageSpinner />}><MRPage /></Suspense>;
+      case 'history-demo':
+        return <Suspense fallback={<PageSpinner />}><HistoryViewDemo /></Suspense>;
 
       case 'settings':
         return <Suspense fallback={<PageSpinner />}><SettingsPage /></Suspense>;

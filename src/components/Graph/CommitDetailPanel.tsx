@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { Empty, Spin, Typography, List, Tag, Button, Space, Tooltip } from 'antd';
 import { CloseOutlined, FileOutlined, CopyOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
+import { copyText } from '../../utils/clipboard';
 import type { CommitFileChange } from '../../types/git';
 
 const { Text, Paragraph } = Typography;
@@ -13,10 +14,6 @@ const STATUS_COLOR: Record<string, string> = {
   R: 'var(--ant-color-purple, #722ed1)',
   C: 'var(--ant-color-cyan, #13c2c2)',
 };
-
-function copyText(text: string) {
-  navigator.clipboard?.writeText(text).catch(() => { /* 剪贴板不可用时静默 */ });
-}
 
 function DiffView({ diff }: { diff: string }) {
   const lines = diff.split('\n');
@@ -177,9 +174,11 @@ export function CommitDetailPanel() {
           </Text>
           <Tooltip title="复制完整 hash">
             <Button type="text" size="small" icon={<CopyOutlined />}
+              aria-label="复制完整 hash"
               onClick={() => copyText(commitDetail.hash)} style={{ color: '#8c8c8c' }} />
           </Tooltip>
           <Button type="text" size="small" icon={<CloseOutlined />}
+            aria-label="关闭详情面板"
             onClick={() => setSelectedCommit(null)}
             style={{ marginLeft: 'auto', color: '#8c8c8c' }} />
         </div>

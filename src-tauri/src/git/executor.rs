@@ -61,20 +61,25 @@ pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
         Ok(Err(e)) => Err(format!("Git process error: {}", e)),
         Err(_) => {
             // Timeout — try to kill the process
-            #[cfg(windows)]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/PID", &child_id.to_string()])
-                    .output();
+            let kill_result = {
+                #[cfg(windows)]
+                { Command::new("taskkill").args(["/F", "/PID", &child_id.to_string()]).output() }
+                #[cfg(not(windows))]
+                { Command::new("kill").args(["-9", &child_id.to_string()]).output() }
+            };
+            if let Err(e) = kill_result {
+                log::debug!("Failed to kill timed-out git process {}: {}", child_id, e);
             }
-            #[cfg(not(windows))]
-            {
-                let _ = Command::new("kill")
-                    .args(["-9", &child_id.to_string()])
-                    .output();
+            // 等待线程退出，设置 5 秒二次超时防止 join 无限阻塞
+            let join_timeout = Duration::from_secs(5);
+            let (tx2, rx2) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = thread_handle.join();
+                let _ = tx2.send(());
+            });
+            if rx2.recv_timeout(join_timeout).is_err() {
+                log::warn!("Thread join timed out after kill for git {}", args.join(" "));
             }
-            // 等待线程退出（进程被 kill 后应该很快退出）
-            let _ = thread_handle.join();
             Err(format!(
                 "Git command timed out after {}s: git {}",
                 timeout.as_secs(),

@@ -8,7 +8,6 @@ import {
   SettingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  PullRequestOutlined,
   RocketOutlined,
 } from '@ant-design/icons';
 import { Titlebar } from './Titlebar';
@@ -33,7 +32,7 @@ export function AppLayout({ children, activeNav, onNavChange }: AppLayoutProps) 
     { key: 'workspace', icon: <RocketOutlined />, label: '工作区' },
     { key: 'branches', icon: <BranchesOutlined />, label: '分支' },
     { key: 'history', icon: <HistoryOutlined />, label: '历史' },
-    { key: 'mergerequests', icon: <PullRequestOutlined />, label: 'MR' },
+    { key: 'history-demo', icon: <HistoryOutlined />, label: '历史演示' },
     { type: 'divider' as const },
     { key: 'settings', icon: <SettingOutlined />, label: '设置' },
   ];

@@ -67,6 +67,15 @@
 .branch-item {
   position: relative;
 }
+.branch-item:hover {
+  background: var(--ant-color-fill-tertiary, rgba(0, 0, 0, 0.04)) !important;
+}
+
+/* MR 列表项 hover */
+.mr-list-item:hover {
+  border-color: var(--ant-color-primary, #1677ff) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
 
 /* 焦点可见样式 — 键盘导航时显示 */
 *:focus-visible {

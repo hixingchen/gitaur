@@ -115,7 +115,11 @@ export const useBranchTagStore = create<BranchTagState>((set, get) => ({
     const newTagsByRepo = { ...tagsByRepo, [repoPath]: newRepoTags };
 
     set({ tagsByRepo: newTagsByRepo });
-    await persistTags(newTagsByRepo, _store);
+    try {
+      await persistTags(newTagsByRepo, _store);
+    } catch (e) {
+      console.error('持久化分支标签失败:', e);
+    }
   },
 
   removeTag: async (repoPath: string, branchName: string) => {
@@ -125,7 +129,11 @@ export const useBranchTagStore = create<BranchTagState>((set, get) => ({
     const newTagsByRepo = { ...tagsByRepo, [repoPath]: newRepoTags };
 
     set({ tagsByRepo: newTagsByRepo });
-    await persistTags(newTagsByRepo, _store);
+    try {
+      await persistTags(newTagsByRepo, _store);
+    } catch (e) {
+      console.error('持久化分支标签失败:', e);
+    }
   },
 
   getTag: (repoPath: string, branchName: string) => {

@@ -3,6 +3,7 @@ import { Spin, Empty, Typography, Button, Segmented, message } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { useViewStore } from '../../stores/viewStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { invoke } from '@tauri-apps/api/core';
 
 // Monaco Editor 懒加载 — 约 3MB，仅在需要时加载
@@ -53,6 +54,8 @@ export function DiffView() {
   const repoInfo = useRepoStore((s) => s.repoInfo);
   const selectedFile = useViewStore((s) => s.selectedFile);
   const stageFile = useRepoStore((s) => s.stageFile);
+  const appTheme = useSettingsStore((s) => s.settings.theme);
+  const editorTheme = appTheme === 'dark' ? 'vs-dark' : 'vs';
   const [headText, setHeadText] = useState('');
   const [workText, setWorkText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -213,7 +216,7 @@ export function DiffView() {
               language={detectLang(selectedFile)}
               value={editContent}
               onChange={(v) => setEditContent(v || '')}
-              theme="vs-dark"
+              theme={editorTheme}
               onMount={(editor) => { editorRef.current = editor; }}
               options={{
                 ...baseOptions,
@@ -235,7 +238,7 @@ export function DiffView() {
               language={detectLang(selectedFile)}
               original={headText}
               modified={workText}
-              theme="vs-dark"
+              theme={editorTheme}
               keepCurrentOriginalModel={false}
               keepCurrentModifiedModel={false}
               options={{

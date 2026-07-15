@@ -3,8 +3,34 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// 检查 IP 是否属于内网/保留地址（统一入口，字符串匹配 + 解析双重保障）
+fn is_private_ip(addr: &std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)  // 100.64.0.0/10 CGNAT
+                || (v4.octets()[0] == 172 && (v4.octets()[1] >= 16 && v4.octets()[1] <= 31))  // 172.16/12
+                || (v4.octets()[0] == 192 && v4.octets()[1] == 2 && v4.octets()[2] == 1)    // 192.0.2.0/24
+                || (v4.octets()[0] == 198 && v4.octets()[1] == 51 && v4.octets()[2] == 100) // 198.51.100.0/24
+                || (v4.octets()[0] == 203 && v4.octets()[1] == 0 && v4.octets()[2] == 113)  // 203.0.113.0/24
+                || v4.octets()[0] >= 224  // multicast+
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80  // fe80::/10 link-local
+                || (v6.segments()[0] & 0xfe00) == 0xfc00  // fc00::/7 ULA
+        }
+    }
+}
+
 /// Validate that a URL points to an external HTTP(S) host (not localhost/internal IPs).
 /// Prevents SSRF attacks. Also called from git module for clone URL validation.
+/// 防御三层：1) 字符串匹配 2) IP 解析 3) DNS 解析（防 DNS 重绑定）
 pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| format!("Invalid URL: {}", e))?;
@@ -32,6 +58,10 @@ pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
             || normalized.starts_with("169.254.")
             || normalized.starts_with("10.")
             || normalized.starts_with("192.168.")
+            || normalized.starts_with("100.64.")   // CGNAT 100.64.0.0/10
+            || normalized.starts_with("192.0.2.")   // TEST-NET-1
+            || normalized.starts_with("198.51.100.") // TEST-NET-2
+            || normalized.starts_with("203.0.113.")  // TEST-NET-3
         {
             return Err("不允许访问内部网络地址".to_string());
         }
@@ -41,6 +71,17 @@ pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
             if let Some(second) = normalized.split('.').nth(1) {
                 if let Ok(n) = second.parse::<u8>() {
                     if (16..=31).contains(&n) {
+                        return Err("不允许访问内部网络地址".to_string());
+                    }
+                }
+            }
+        }
+
+        // 100.64.0.0/10 (100.64.x.x ~ 100.127.x.x)
+        if normalized.starts_with("100.") {
+            if let Some(second) = normalized.split('.').nth(1) {
+                if let Ok(n) = second.parse::<u8>() {
+                    if (64..=127).contains(&n) {
                         return Err("不允许访问内部网络地址".to_string());
                     }
                 }
@@ -64,6 +105,26 @@ pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
         {
             return Err("不允许访问内部网络地址".to_string());
         }
+
+        // 第三层防御：DNS 解析验证（防 DNS 重绑定 + 替代 IP 表示如八进制/十进制）
+        // 先尝试直接解析为 IP，再做 DNS 查询
+        if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
+            if is_private_ip(&ip) {
+                return Err("不允许访问内部网络地址".to_string());
+            }
+        } else {
+            // 非 IP 字面量 — 做 DNS 解析检查
+            use std::net::ToSocketAddrs;
+            let host_with_port = format!("{}:80", host);
+            if let Ok(addrs) = host_with_port.to_socket_addrs() {
+                for addr in addrs {
+                    if is_private_ip(&addr.ip()) {
+                        return Err(format!("域名解析到内网地址: {}", addr.ip()));
+                    }
+                }
+            }
+            // DNS 解析失败不阻止请求（可能是网络问题，由后续 HTTP 请求报错）
+        }
     }
 
     Ok(())
@@ -79,6 +140,7 @@ fn http_client() -> Result<&'static Client, String> {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(4)
+            .redirect(reqwest::redirect::Policy::none()) // 禁止自动跟随重定向，防止 SSRF 绕过
             .build()
             .unwrap_or_else(|e| {
                 log::error!("Failed to create configured HTTP client: {}, using default", e);

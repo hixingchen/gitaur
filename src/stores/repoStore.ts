@@ -423,9 +423,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     set({ selectedCommit: hash, commitDetail: null, selectedCommitFile: null, commitFileDiff: null }),
   setSelectedCommitFile: (file: string | null) => set({ selectedCommitFile: file }),
 
-  closeRepo: () => set({
-    repoPath: null, repoInfo: null, logEntries: [], logBranch: null,
-    selectedCommit: null, commitDetail: null, selectedCommitFile: null, commitFileDiff: null,
-  }),
+  closeRepo: () => {
+    // 停止后端文件监听，防止 OS 级资源泄漏
+    invoke('stop_file_watcher').catch(() => {});
+    set({
+      repoPath: null, repoInfo: null, logEntries: [], logBranch: null,
+      selectedCommit: null, commitDetail: null, selectedCommitFile: null, commitFileDiff: null,
+    });
+  },
   clearError: () => set({ error: null }),
 }));
