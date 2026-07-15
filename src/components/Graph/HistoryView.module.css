@@ -60,6 +60,14 @@
   background: var(--ant-color-primary-bg-hover, #bae0ff) !important;
 }
 
+/* ====== 图形区域 ====== */
+.graphCell {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
 /* ====== 提交信息区域 ====== */
 .commitBody {
   flex: 1;
