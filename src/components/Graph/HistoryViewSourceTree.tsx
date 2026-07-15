@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Input, Select, Button, Typography, Tooltip, Spin, Empty } from 'antd';
+import { Input, Button, Typography, Tooltip, Spin, Empty } from 'antd';
 import { SearchOutlined, ReloadOutlined, CopyOutlined, DownOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
@@ -197,14 +197,6 @@ export function HistoryViewSourceTree() {
   const [count, setCount] = useState(PAGE_SIZE);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const branchOptions = useMemo(() => {
-    const locals = repoInfo?.branches.filter((b) => !b.name.startsWith('remotes/')) ?? [];
-    return [
-      { value: '__all__', label: '全部分支' },
-      ...locals.map((b) => ({ value: b.name, label: b.name })),
-    ];
-  }, [repoInfo?.branches]);
-
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
     if (!q) return logEntries;
@@ -216,12 +208,6 @@ export function HistoryViewSourceTree() {
   }, [logEntries, debouncedSearch]);
 
   const { commits, maxLane } = useMemo(() => computeTopology(filtered), [filtered]);
-
-  const handleBranchChange = (value: string) => {
-    const branch = value === '__all__' ? null : value;
-    setCount(PAGE_SIZE);
-    loadLog(PAGE_SIZE, branch);
-  };
 
   const handleLoadMore = () => {
     const next = Math.min(count + PAGE_SIZE, MAX_LOG_COUNT);
@@ -252,24 +238,14 @@ export function HistoryViewSourceTree() {
       <div className={s.listPanel}>
         {/* 工具栏 */}
         <div className={s.toolbar}>
-          <Select
-            size="small"
-            value={logBranch ?? '__all__'}
-            onChange={handleBranchChange}
-            style={{ width: 160 }}
-            options={branchOptions}
-            showSearch
-            optionFilterProp="label"
-            variant="borderless"
-          />
           <Input
             size="small"
             allowClear
-            placeholder="搜索..."
+            placeholder="搜索提交..."
             prefix={<SearchOutlined style={{ color: '#bbb', fontSize: 12 }} />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 200 }}
+            style={{ width: 220 }}
             variant="borderless"
           />
           <span className={s.toolbarCount}>
