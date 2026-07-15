@@ -99,22 +99,53 @@ export function PipelineBar({ task }: PipelineBarProps) {
         const commitDone = task.steps.find(s => s.key === 'commit')?.status === 'finish';
         const syncDone = task.steps.find(s => s.key === 'sync')?.status === 'finish';
         const pushDone = task.steps.find(s => s.key === 'push')?.status === 'finish';
+
+        // 推送已完成 → 主操作是创建MR，可回退继续开发
+        if (pushDone) {
+          return (
+            <Space size={6}>
+              <Button type="primary" icon={<PullRequestOutlined />} size="small"
+                onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
+              <Button icon={<EditOutlined />} size="small"
+                onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+              <DeleteBtn />
+            </Space>
+          );
+        }
+
+        // 同步已完成 → 主操作是推送，可回退继续开发
+        if (syncDone) {
+          return (
+            <Space size={6}>
+              <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+                onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
+              <Button icon={<EditOutlined />} size="small"
+                onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+              <DeleteBtn />
+            </Space>
+          );
+        }
+
+        // 提交已完成 → 主操作是同步
+        if (commitDone) {
+          return (
+            <Space size={6}>
+              <Button type="primary" icon={<ReloadOutlined />} size="small"
+                onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
+              <Button icon={<EditOutlined />} size="small"
+                onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+              <DeleteBtn />
+            </Space>
+          );
+        }
+
+        // 未提交 → 主操作是提交代码，可跳过直接同步
         return (
           <Space size={6}>
             <Button type="primary" icon={<EditOutlined />} size="small"
               onClick={() => setCommitModalOpen(true)}>提交代码</Button>
-            {!syncDone && (
-              <Button icon={<ReloadOutlined />} size="small"
-                onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
-            )}
-            {syncDone && !pushDone && (
-              <Button type="primary" icon={<CloudUploadOutlined />} size="small"
-                onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
-            )}
-            {pushDone && (
-              <Button type="primary" icon={<PullRequestOutlined />} size="small"
-                onClick={() => createMR(task.id)} loading={loading}>创建MR</Button>
-            )}
+            <Button icon={<ReloadOutlined />} size="small"
+              onClick={() => syncRemote(task.id)} loading={loading}>同步远程</Button>
             <DeleteBtn />
           </Space>
         );
@@ -130,17 +161,20 @@ export function PipelineBar({ task }: PipelineBarProps) {
       // ====== 同步错误暂停 ======
       case 'paused_sync_error': {
         const isConflict = (task.error || '').includes('冲突');
+        // 冲突：先提交解决结果，再继续同步
+        // 未提交：先提交代码，再同步
         return (
           <Space size={6}>
-            {isConflict ? (
-              <Button type="primary" icon={<SyncOutlined />} size="small"
-                onClick={() => syncRemote(task.id)} loading={loading}>继续同步</Button>
-            ) : (
-              <Button type="primary" icon={<EditOutlined />} size="small"
-                onClick={() => setCommitModalOpen(true)}>提交代码</Button>
-            )}
-            <Button icon={<EditOutlined />} size="small"
-              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+            <Button type="primary" icon={isConflict ? <SyncOutlined /> : <EditOutlined />} size="small"
+              onClick={isConflict ? () => syncRemote(task.id) : () => setCommitModalOpen(true)}
+              loading={loading}>
+              {isConflict ? '继续同步' : '提交代码'}
+            </Button>
+            <Button icon={isConflict ? <EditOutlined /> : <ReloadOutlined />} size="small"
+              onClick={isConflict ? () => setCommitModalOpen(true) : () => syncRemote(task.id)}
+              loading={!isConflict ? loading : false}>
+              {isConflict ? '提交代码' : '同步远程'}
+            </Button>
             <DeleteBtn />
           </Space>
         );
