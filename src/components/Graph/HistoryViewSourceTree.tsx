@@ -43,69 +43,72 @@ function CommitGraph({ commit, maxLane, commits }: { commit: LaneCommit; maxLane
   const cx = commit.lane * LANE_W + 10;
   const cy = ROW_H / 2;
 
-  // 找到父提交的位置
   const hashIndex = new Map(commits.map((c, i) => [c.hash, i]));
   const hashLane = new Map(commits.map(c => [c.hash, c.lane]));
   const currentIdx = commits.indexOf(commit);
 
+  // 判断当前行前后是否有同 lane 的提交（决定是否画贯穿线）
+  const hasAbove = currentIdx > 0 && commits[currentIdx - 1].lane === commit.lane;
+  const hasBelow = currentIdx < commits.length - 1 && commits[currentIdx + 1]?.lane === commit.lane;
+
   return (
-    <svg width={width} height={ROW_H} style={{ display: 'block' }}>
-      {/* 垂直贯穿线 — 所有 lane */}
-      {Array.from({ length: maxLane + 1 }, (_, i) => {
-        // 检查这个 lane 在当前行附近是否有提交
-        const hasCommitNearby = commits.some((c, idx) =>
-          c.lane === i && Math.abs(idx - currentIdx) <= 1
-        );
-        if (!hasCommitNearby) return null;
-        return (
-          <line
-            key={`lane-${i}`}
-            x1={i * LANE_W + 10} y1={0}
-            x2={i * LANE_W + 10} y2={ROW_H}
-            stroke={BRANCH_COLORS[i % BRANCH_COLORS.length]}
-            strokeWidth={2}
-            opacity={0.3}
-          />
-        );
-      })}
+    <svg width={width} height={ROW_H} style={{ display: 'block' }} xmlns="http://www.w3.org/2000/svg">
+      {/* 贯穿线 — 只在有连续提交的 lane 上画 */}
+      {hasAbove && (
+        <line x1={cx} y1={0} x2={cx} y2={cy}
+          style={{ stroke: commit.color, strokeWidth: 1.5, strokeLinecap: 'round' }}
+        />
+      )}
+      {hasBelow && (
+        <line x1={cx} y1={cy} x2={cx} y2={ROW_H}
+          style={{ stroke: commit.color, strokeWidth: 1.5, strokeLinecap: 'round' }}
+        />
+      )}
 
       {/* 到父提交的连线 */}
       {commit.parents.map(pHash => {
         const pIdx = hashIndex.get(pHash);
         const pLane = hashLane.get(pHash);
         if (pIdx === undefined || pLane === undefined) return null;
-        if (pIdx <= currentIdx) return null; // 只画向下的线
+        if (pIdx <= currentIdx) return null;
 
         const px = pLane * LANE_W + 10;
         const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
+        const lineStyle = { stroke: color, strokeWidth: 1.5, strokeLinecap: 'round' as const, fill: 'none' };
 
         if (commit.lane === pLane) {
-          // 同 lane 直线
-          return (
-            <line key={pHash} x1={cx} y1={cy} x2={px} y2={ROW_H}
-              stroke={color} strokeWidth={2} />
-          );
+          return <line key={pHash} x1={cx} y1={cy} x2={px} y2={ROW_H} style={lineStyle} />;
         }
-        // 不同 lane 曲线
+        const midY = cy + (ROW_H - cy) * 0.5;
         return (
           <path key={pHash}
-            d={`M ${cx} ${cy} C ${cx} ${cy + 16}, ${px} ${ROW_H - 16}, ${px} ${ROW_H}`}
-            fill="none" stroke={color} strokeWidth={2}
+            d={`M ${cx} ${cy} Q ${cx} ${midY}, ${px} ${ROW_H}`}
+            style={lineStyle}
           />
         );
       })}
 
-      {/* 提交圆点 */}
+      {/* 提交圆点 — 外圈 */}
       <circle
         cx={cx} cy={cy}
-        r={commit.isBranchTip ? DOT_R + 1.5 : DOT_R}
-        fill={commit.isBranchTip ? commit.color : '#fff'}
-        stroke={commit.color}
-        strokeWidth={2}
+        r={commit.isBranchTip ? 6 : 4}
+        style={{
+          fill: commit.isBranchTip ? commit.color : 'var(--ant-color-bg-container, #fff)',
+          stroke: commit.color,
+          strokeWidth: 1.5,
+        }}
       />
       {/* 合并提交内点 */}
       {commit.isMerge && (
-        <circle cx={cx} cy={cy} r={2.5} fill="#fff" />
+        <circle cx={cx} cy={cy} r={2}
+          style={{ fill: 'var(--ant-color-bg-container, #fff)' }}
+        />
+      )}
+      {/* 分支 tip 光晕 */}
+      {commit.isBranchTip && (
+        <circle cx={cx} cy={cy} r={8}
+          style={{ fill: 'none', stroke: commit.color, strokeWidth: 1, opacity: 0.2 }}
+        />
       )}
     </svg>
   );
