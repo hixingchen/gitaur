@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Input, Button, Tooltip, Spin, Empty } from 'antd';
-import { SearchOutlined, ReloadOutlined, CopyOutlined, DownOutlined } from '@ant-design/icons';
+import { SearchOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
 import type { LaneCommit } from '../../utils/topology';
@@ -10,8 +10,6 @@ import { CommitDetailPanel } from './CommitDetailPanel';
 import { SectionErrorBoundary } from '../SectionErrorBoundary';
 import s from './HistoryView.module.css';
 
-const PAGE_SIZE = 50;
-const MAX_LOG_COUNT = 1000;
 const ROW_H = 48;
 const LANE_W = 20;
 const DOT_R = 5;
@@ -184,7 +182,6 @@ function CommitRow({
 export function HistoryViewSourceTree() {
   const logEntries = useRepoStore((s) => s.logEntries);
   const logLoading = useRepoStore((s) => s.logLoading);
-  const logBranch = useRepoStore((s) => s.logBranch);
   const loadLog = useRepoStore((s) => s.loadLog);
   const repoInfo = useRepoStore((s) => s.repoInfo);
   const selectedCommit = useRepoStore((s) => s.selectedCommit);
@@ -192,8 +189,12 @@ export function HistoryViewSourceTree() {
 
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
-  const [count, setCount] = useState(PAGE_SIZE);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // 初始加载全部提交
+  useEffect(() => {
+    if (repoInfo) loadLog(2000);
+  }, [repoInfo]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
@@ -206,14 +207,6 @@ export function HistoryViewSourceTree() {
   }, [logEntries, debouncedSearch]);
 
   const { commits, maxLane } = useMemo(() => computeTopology(filtered), [filtered]);
-
-  const handleLoadMore = () => {
-    const next = Math.min(count + PAGE_SIZE, MAX_LOG_COUNT);
-    setCount(next);
-    loadLog(next, logBranch);
-  };
-
-  const reachedEnd = logEntries.length < count;
 
   // 选中时滚动到可视区域
   useEffect(() => {
@@ -265,16 +258,9 @@ export function HistoryViewSourceTree() {
           <span className={s.toolbarCount}>
             {search ? `${filtered.length}/${logEntries.length}` : `${logEntries.length}`}
           </span>
-          <Tooltip title="加载更多">
-            <Button size="small" type="text" icon={<DownOutlined />}
-              onClick={handleLoadMore}
-              disabled={reachedEnd || logLoading || count >= MAX_LOG_COUNT}
-              loading={logLoading}
-            />
-          </Tooltip>
           <Tooltip title="刷新">
             <Button size="small" type="text" icon={<ReloadOutlined />}
-              onClick={() => loadLog(count, logBranch)}
+              onClick={() => loadLog(2000)}
               loading={logLoading}
             />
           </Tooltip>
