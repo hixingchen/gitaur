@@ -43,7 +43,7 @@ function HL({ text, q }: { text: string; q: string }) {
   )}</>;
 }
 
-// ====== 统一 SVG 图形 — 直角连接（地铁图风格） ======
+// ====== 统一 SVG 图形 — 双干线 + 水平连接 ======
 function GraphSVG({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number }) {
   const width = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
   const height = commits.length * ROW_H;
@@ -53,31 +53,25 @@ function GraphSVG({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number
   const hashIndex = useMemo(() => new Map(commits.map((c, i) => [c.hash, i])), [commits]);
   const hashLane = useMemo(() => new Map(commits.map(c => [c.hash, c.lane])), [commits]);
 
-  // 每个 lane 的首尾行
-  const laneRanges = useMemo(() => {
-    const m = new Map<number, { first: number; last: number }>();
-    for (let i = 0; i < commits.length; i++) {
-      const l = commits[i].lane;
-      const e = m.get(l);
-      if (!e) m.set(l, { first: i, last: i });
-      else e.last = i;
-    }
-    return m;
+  // 收集所有出现过的 lane
+  const usedLanes = useMemo(() => {
+    const set = new Set<number>();
+    commits.forEach(c => set.add(c.lane));
+    return Array.from(set).sort();
   }, [commits]);
 
   return (
     <svg width={width} height={height} style={{ display: 'block' }}>
-      {/* 贯穿垂直线 */}
-      {Array.from(laneRanges.entries()).map(([lane, range]) => (
+      {/* 每条 lane 一根从头到尾的垂直线 */}
+      {usedLanes.map(lane => (
         <line key={`v-${lane}`}
-          x1={LX(lane)} y1={RY(range.first)}
-          x2={LX(lane)} y2={RY(range.last)}
+          x1={LX(lane)} y1={0} x2={LX(lane)} y2={height}
           stroke={BRANCH_COLORS[lane % BRANCH_COLORS.length]}
           strokeWidth={2} strokeLinecap="round"
         />
       ))}
 
-      {/* 父子连线 — 直角：先水平再垂直 */}
+      {/* 父子连线 — 只有不同 lane 时画水平连接 */}
       {commits.map((c, i) => {
         const cx = LX(c.lane);
         const cy = RY(i);
@@ -85,18 +79,17 @@ function GraphSVG({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number
           const pIdx = hashIndex.get(pHash);
           const pLane = hashLane.get(pHash);
           if (pIdx === undefined || pLane === undefined || pIdx <= i) return null;
-          if (c.lane === pLane) return null; // 同 lane 已有贯穿线
+          if (c.lane === pLane) return null;
 
           const px = LX(pLane);
           const py = RY(pIdx);
           const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
-          // 在父子中间行做拐点
-          const midY = cy + (py - cy) * 0.5;
 
           return (
             <path key={`${c.hash}-${pHash}`}
-              d={`M ${cx} ${cy} L ${cx} ${midY} L ${px} ${midY} L ${px} ${py}`}
-              fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+              d={`M ${cx} ${cy} L ${px} ${cy} L ${px} ${py}`}
+              fill="none" stroke={color} strokeWidth={2}
+              strokeLinecap="round" strokeLinejoin="round"
             />
           );
         });
