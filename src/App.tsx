@@ -484,6 +484,7 @@ function App() {
       theme={{
         algorithm: darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
         token: { colorPrimary: '#1677ff', borderRadius: 6 },
+        cssVar: true,
       }}
     >
       <ErrorBoundary>
