@@ -75,7 +75,7 @@ function FileChangeItem({ change, selected, onSelect }: {
         <Tag style={{ margin: 0, color, borderColor: color, fontSize: 10, lineHeight: '16px', padding: '0 4px' }}>
           {change.status}
         </Tag>
-        <FileOutlined style={{ color: '#8c8c8c', fontSize: 12, flexShrink: 0 }} />
+        <FileOutlined style={{ color: 'var(--ant-color-text-tertiary)', fontSize: 12, flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
             fontSize: 12, fontFamily: 'monospace',
@@ -91,8 +91,8 @@ function FileChangeItem({ change, selected, onSelect }: {
         </div>
         {!isBinary && (change.additions > 0 || change.deletions > 0) && (
           <Space size={2} style={{ flexShrink: 0, fontSize: 10 }}>
-            {change.additions > 0 && <span style={{ color: '#52c41a' }}>+{change.additions}</span>}
-            {change.deletions > 0 && <span style={{ color: '#ff4d4f' }}>-{change.deletions}</span>}
+            {change.additions > 0 && <span style={{ color: 'var(--ant-color-success)' }}>+{change.additions}</span>}
+            {change.deletions > 0 && <span style={{ color: 'var(--ant-color-error)' }}>-{change.deletions}</span>}
           </Space>
         )}
         {isBinary && <Text type="secondary" style={{ fontSize: 10, flexShrink: 0 }}>二进制</Text>}
@@ -159,13 +159,13 @@ export function CommitDetailPanel() {
   return (
     <div style={{
       height: '100%', display: 'flex', flexDirection: 'column',
-      background: 'var(--ant-color-fill-quaternary, rgba(0,0,0,0.02))',
-      borderRadius: 10, border: '1px solid var(--ant-color-border-secondary, #333)',
+      background: 'var(--ant-color-bg-container)',
+      borderRadius: 10, border: '1px solid var(--ant-color-border-secondary)',
       overflow: 'hidden',
     }}>
       {/* 头部：提交信息 */}
       <div style={{
-        padding: '10px 12px', borderBottom: '1px solid var(--ant-color-border-secondary, #333)',
+        padding: '10px 12px', borderBottom: '1px solid var(--ant-color-border-secondary)',
         display: 'flex', flexDirection: 'column', gap: 6,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -175,12 +175,13 @@ export function CommitDetailPanel() {
           <Tooltip title="复制完整 hash">
             <Button type="text" size="small" icon={<CopyOutlined />}
               aria-label="复制完整 hash"
-              onClick={() => copyText(commitDetail.hash)} style={{ color: '#8c8c8c' }} />
+              onClick={() => copyText(commitDetail.hash)}
+              style={{ color: 'var(--ant-color-text-tertiary)' }} />
           </Tooltip>
           <Button type="text" size="small" icon={<CloseOutlined />}
             aria-label="关闭详情面板"
             onClick={() => setSelectedCommit(null)}
-            style={{ marginLeft: 'auto', color: '#8c8c8c' }} />
+            style={{ marginLeft: 'auto', color: 'var(--ant-color-text-tertiary)' }} />
         </div>
         <Paragraph style={{ margin: 0, fontSize: 13, fontWeight: 500, whiteSpace: 'pre-wrap' }}>
           {commitDetail.message}
@@ -201,8 +202,8 @@ export function CommitDetailPanel() {
           文件变更 ({stats.files})
         </Text>
         <Space size={6} style={{ fontSize: 11 }}>
-          <span style={{ color: '#52c41a' }}>+{stats.additions}</span>
-          <span style={{ color: '#ff4d4f' }}>-{stats.deletions}</span>
+          <span style={{ color: 'var(--ant-color-success)' }}>+{stats.additions}</span>
+          <span style={{ color: 'var(--ant-color-error)' }}>-{stats.deletions}</span>
         </Space>
       </div>
       <div style={{ maxHeight: 180, overflow: 'auto', padding: '0 8px' }}>
@@ -221,10 +222,10 @@ export function CommitDetailPanel() {
       </div>
 
       {/* diff 展示 */}
-      <div style={{ flex: 1, minHeight: 0, borderTop: '1px solid var(--ant-color-border-secondary, #333)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minHeight: 0, borderTop: '1px solid var(--ant-color-border-secondary)', display: 'flex', flexDirection: 'column' }}>
         <div style={{
-          padding: '6px 12px', fontSize: 11, color: '#8c8c8c',
-          background: 'var(--ant-color-fill-secondary, rgba(0,0,0,0.03))',
+          padding: '6px 12px', fontSize: 11, color: 'var(--ant-color-text-tertiary)',
+          background: 'var(--ant-color-fill-secondary)',
           fontFamily: 'monospace',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
@@ -236,7 +237,7 @@ export function CommitDetailPanel() {
           ) : commitFileDiff ? (
             <DiffView diff={commitFileDiff} />
           ) : (
-            <div style={{ textAlign: 'center', padding: 24, color: '#999', fontSize: 12 }}>
+            <div style={{ textAlign: 'center', padding: 24, color: 'var(--ant-color-text-tertiary)', fontSize: 12 }}>
               选择上方文件查看变更
             </div>
           )}

@@ -1,5 +1,5 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
-import { Input, Button, Typography, Tooltip, Spin, Empty } from 'antd';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { Input, Button, Tooltip, Spin, Empty } from 'antd';
 import { SearchOutlined, ReloadOutlined, CopyOutlined, DownOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
@@ -9,8 +9,6 @@ import { useDebounce } from '../../hooks/useDebounce';
 import { CommitDetailPanel } from './CommitDetailPanel';
 import { SectionErrorBoundary } from '../SectionErrorBoundary';
 import s from './HistoryView.module.css';
-
-const { Text } = Typography;
 
 const PAGE_SIZE = 50;
 const MAX_LOG_COUNT = 1000;
@@ -145,21 +143,21 @@ function CommitRow({
 
       {/* 提交信息 */}
       <div className={s.commitBody}>
-        {/* 消息 + 标签 */}
+        {/* 消息 + tag 标签（分支已在图形中用颜色区分，不重复显示） */}
         <div className={s.commitMsgRow}>
           <span className={s.commitMsg}>{highlightText(commit.message.split('\n')[0])}</span>
           <div className={s.refTags}>
-            {commit.refs.map((ref, idx) => {
-              const isTag = ref.startsWith('tag: ');
-              const name = isTag ? ref.replace('tag: ', '') : ref.replace('origin/', 'o/');
-              const color = isTag ? '#faad14' : commit.color;
-              return (
-                <span key={idx} className={s.refTag}
-                  style={{ color, background: `${color}15`, border: `1px solid ${color}30` }}>
-                  {name}
-                </span>
-              );
-            })}
+            {commit.refs
+              .filter(ref => ref.startsWith('tag: '))
+              .map((ref, idx) => {
+                const name = ref.replace('tag: ', '');
+                return (
+                  <span key={idx} className={s.refTag}
+                    style={{ color: '#faad14', background: 'rgba(250,173,20,0.1)', border: '1px solid rgba(250,173,20,0.25)' }}>
+                    {name}
+                  </span>
+                );
+              })}
           </div>
         </div>
 
@@ -232,6 +230,22 @@ export function HistoryViewSourceTree() {
     }
   }, [selectedCommit, commits]);
 
+  // 键盘上下箭头导航
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    if (commits.length === 0) return;
+
+    const currentIdx = selectedCommit ? commits.findIndex(c => c.hash === selectedCommit) : -1;
+    let nextIdx: number;
+    if (e.key === 'ArrowDown') {
+      nextIdx = currentIdx < commits.length - 1 ? currentIdx + 1 : 0;
+    } else {
+      nextIdx = currentIdx > 0 ? currentIdx - 1 : commits.length - 1;
+    }
+    setSelectedCommit(commits[nextIdx].hash);
+  }, [commits, selectedCommit, setSelectedCommit]);
+
   return (
     <div className={s.root}>
       {/* 左侧：提交列表 */}
@@ -267,7 +281,7 @@ export function HistoryViewSourceTree() {
         </div>
 
         {/* 提交列表 */}
-        <div className={s.commitList} ref={listRef}>
+        <div className={s.commitList} ref={listRef} tabIndex={0} onKeyDown={handleKeyDown}>
           {!repoInfo ? (
             <Empty description="未打开仓库" style={{ marginTop: 80 }} />
           ) : logLoading && logEntries.length === 0 ? (
