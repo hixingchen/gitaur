@@ -33,7 +33,7 @@ interface RepoState {
   openRepo: (path: string) => Promise<void>;
   refreshStatus: () => Promise<void>;
   refreshStatusSilent: () => Promise<void>;
-  loadLog: (maxCount?: number, branch?: string | null) => Promise<void>;
+  loadLog: (maxCount?: number, branch?: string | null, baseRef?: string) => Promise<void>;
   commit: (message: string, files: string[], amend?: boolean) => Promise<void>;
   checkout: (target: string, createBranch?: boolean, startPoint?: string) => Promise<void>;
   push: (remote?: string, force?: boolean, deleteBranch?: boolean, branch?: string) => Promise<void>;
@@ -146,7 +146,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     }
   },
 
-  loadLog: async (maxCount?: number, branch?: string | null) => {
+  loadLog: async (maxCount?: number, branch?: string | null, baseRef?: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
     const reqId = ++_logRequestId;
@@ -156,6 +156,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         repoPath,
         maxCount: maxCount ?? 100,
         branch: branch ?? null,
+        baseRef: baseRef ?? null,
       });
       if (reqId === _logRequestId) set({ logEntries: entries, logLoading: false });
     } catch (e) {

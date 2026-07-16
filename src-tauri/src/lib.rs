@@ -45,6 +45,7 @@ pub fn run() {
             git_stage_all,
             git_branch_delete,
             git_branch_rename,
+            git_branch_list,
             get_commit_detail,
             get_commit_file_diff,
             // Repo commands

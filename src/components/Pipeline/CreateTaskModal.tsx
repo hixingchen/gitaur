@@ -92,9 +92,9 @@ export function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
         squash: true,
         deleteBranch: true,
         autoMerge: true,
-      }}>
+      }} autoComplete="off">
         <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}>
-          <Input placeholder="例：用户登录功能" />
+          <Input placeholder="例：用户登录功能" autoComplete="off" />
         </Form.Item>
         <Form.Item label="分支名称">
           <Space.Compact style={{ width: '100%' }}>
@@ -106,7 +106,7 @@ export function CreateTaskModal({ open, onClose }: CreateTaskModalProps) {
               </Select>
             </Form.Item>
             <Form.Item name="branchSuffix" noStyle>
-              <Input style={{ flex: 1 }} placeholder="留空则使用任务名称" />
+              <Input style={{ flex: 1 }} placeholder="留空则使用任务名称" autoComplete="off" />
             </Form.Item>
           </Space.Compact>
           <div style={{ fontSize: 12, color: 'var(--ant-color-text-tertiary, #999)', marginTop: 4 }}>

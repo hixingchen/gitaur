@@ -242,7 +242,12 @@ pub struct CreateMergeRequestParams {
     pub reviewer_ids: Option<Vec<u64>>,
     pub labels: Option<Vec<String>>,
     pub remove_source_branch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub squash: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub squash_commit_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_when_pipeline_succeeds: Option<bool>,
 }
 
 #[tauri::command]
@@ -356,10 +361,26 @@ pub async fn gitlab_create_merge_request(
         encoded_project
     );
 
+    // 对分支名进行 URL 编码，处理中文字符
+    let encoded_params = serde_json::json!({
+        "source_branch": params.source_branch,
+        "target_branch": params.target_branch,
+        "title": params.title,
+        "description": params.description,
+        "assignee_ids": params.assignee_ids,
+        "reviewer_ids": params.reviewer_ids,
+        "labels": params.labels,
+        "remove_source_branch": params.remove_source_branch,
+        "squash": params.squash,
+        "squash_commit_message": params.squash_commit_message,
+        "merge_when_pipeline_succeeds": params.merge_when_pipeline_succeeds,
+    });
+
     let response = http_client()?
         .post(&url)
         .header("PRIVATE-TOKEN", &token)
-        .json(&params)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .body(encoded_params.to_string())
         .send()
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
@@ -383,6 +404,10 @@ struct MergeRequestMergeBody {
     squash: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     should_remove_source_branch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    squash_commit_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_message: Option<String>,
 }
 
 #[tauri::command]
@@ -393,6 +418,8 @@ pub async fn gitlab_merge_merge_request(
     mr_iid: u64,
     squash: Option<bool>,
     remove_source_branch: Option<bool>,
+    squash_commit_message: Option<String>,
+    commit_message: Option<String>,
 ) -> Result<GitLabMergeRequest, String> {
     validate_external_url(&base_url)?;
 
@@ -407,6 +434,8 @@ pub async fn gitlab_merge_merge_request(
     let body = MergeRequestMergeBody {
         squash,
         should_remove_source_branch: remove_source_branch,
+        squash_commit_message,
+        commit_message,
     };
 
     let response = http_client()?

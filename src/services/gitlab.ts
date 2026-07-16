@@ -71,6 +71,7 @@ export interface CreateMergeRequestParams {
   labels?: string[];
   remove_source_branch?: boolean;
   squash?: boolean;
+  squash_commit_message?: string;
   merge_when_pipeline_succeeds?: boolean;
 }
 
@@ -155,7 +156,12 @@ export class GitLabService {
   async mergeMergeRequest(
     projectId: string,
     mrIid: number,
-    options?: { squash?: boolean; should_remove_source_branch?: boolean }
+    options?: {
+      squash?: boolean;
+      should_remove_source_branch?: boolean;
+      squash_commit_message?: string;
+      commit_message?: string;
+    }
   ): Promise<GitLabMergeRequest> {
     return invoke<GitLabMergeRequest>('gitlab_merge_merge_request', {
       baseUrl: this.config.url,
@@ -164,6 +170,8 @@ export class GitLabService {
       mrIid,
       squash: options?.squash,
       removeSourceBranch: options?.should_remove_source_branch,
+      squashCommitMessage: options?.squash_commit_message,
+      commitMessage: options?.commit_message,
     });
   }
 

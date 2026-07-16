@@ -38,6 +38,9 @@ pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
         .arg("-c")
         .arg("core.quotePath=false")
         .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")      // 禁止交互式提示（密码等）
+        .env("GIT_EDITOR", "true")             // 编辑器设为 no-op，防止等待输入
+        .env("GIT_MERGE_AUTOEDIT", "no")       // 合并不打开编辑器
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

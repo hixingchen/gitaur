@@ -18,7 +18,7 @@ interface GitLabState {
   loadMergeRequests: (state?: 'opened' | 'closed' | 'merged' | 'all') => Promise<void>;
   selectMR: (mr: GitLabMergeRequest | null) => void;
   createMergeRequest: (params: CreateMergeRequestParams) => Promise<GitLabMergeRequest | null>;
-  mergeMR: (mrIid: number, squash?: boolean) => Promise<boolean>;
+  mergeMR: (mrIid: number, squash?: boolean, squashCommitMessage?: string) => Promise<boolean>;
   closeMR: (mrIid: number) => Promise<boolean>;
   approveMR: (mrIid: number) => Promise<boolean>;
   refreshMR: () => Promise<void>;
@@ -124,7 +124,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
     }
   },
 
-  mergeMR: async (mrIid: number, squash = false) => {
+  mergeMR: async (mrIid: number, squash = false, squashCommitMessage?: string) => {
     const { service, currentProject } = get();
     if (!service || !currentProject) {
       set({ error: '请先选择项目' });
@@ -136,7 +136,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       await service.mergeMergeRequest(
         currentProject.path_with_namespace,
         mrIid,
-        { squash, should_remove_source_branch: true }
+        { squash, should_remove_source_branch: true, squash_commit_message: squashCommitMessage }
       );
       // Refresh list
       await get().loadMergeRequests();

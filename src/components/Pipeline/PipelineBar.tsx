@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   Button, Steps, Tag, Space, Input, Modal, Typography, Tooltip, theme, message,
 } from 'antd';
@@ -10,6 +10,7 @@ import {
   EditOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus, type PipelinePhase, type MrPollStatus } from '../../stores/pipelineStore';
+import { useRepoStore } from '../../stores/repoStore';
 
 const { Text } = Typography;
 
@@ -64,13 +65,60 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const reopenMR = usePipelineStore((s) => s.reopenMR);
   const resumeDevelopment = usePipelineStore((s) => s.resumeDevelopment);
   const resumeFromConflict = usePipelineStore((s) => s.resumeFromConflict);
+  const abortRebase = usePipelineStore((s) => s.abortRebase);
+  const rebaseContinue = usePipelineStore((s) => s.rebaseContinue);
   const loading = usePipelineStore((s) => s.loading);
+  const logEntries = useRepoStore((s) => s.logEntries);
+  const loadLog = useRepoStore((s) => s.loadLog);
 
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [closeMRConfirm, setCloseMRConfirm] = useState(false);
   const [commitModalOpen, setCommitModalOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
+  const [createMRModalOpen, setCreateMRModalOpen] = useState(false);
+  const [mrCommitMessage, setMrCommitMessage] = useState('');
+
+  // 获取提交历史并生成默认的提交消息
+  const getDefaultCommitMessage = useCallback(async () => {
+    try {
+      // 用 baseRef 只加载任务分支独有的提交（排除目标分支的提交）
+      const baseRef = `origin/${task.mrSettings.targetBranch}`;
+      await loadLog(50, task.branchName, baseRef);
+
+      // 等待一下让 logEntries 更新
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      const currentLogEntries = useRepoStore.getState().logEntries;
+
+      if (currentLogEntries.length === 0) {
+        return '';
+      }
+
+      if (task.mrSettings.squash) {
+        // Squash 模式：拼接所有提交消息（按时间正序，先提交的在上）
+        const messages = [...currentLogEntries].reverse().map((entry) => entry.message);
+        return messages.join('\n');
+      } else {
+        // 非 Squash 模式：使用最新的提交消息
+        return currentLogEntries[0].message;
+      }
+    } catch (error) {
+      console.warn('获取提交历史失败:', error);
+      return '';
+    }
+  }, [loadLog, task.branchName, task.mrSettings.squash, task.mrSettings.targetBranch]);
+
+  // 打开创建 MR 弹窗（自动合并时需要填消息，否则直接创建）
+  const handleOpenCreateMRModal = useCallback(async () => {
+    if (task.mrSettings.autoMerge) {
+      const defaultMessage = await getDefaultCommitMessage();
+      setMrCommitMessage(defaultMessage);
+      setCreateMRModalOpen(true);
+    } else {
+      createMR(task.id);
+    }
+  }, [getDefaultCommitMessage, task.mrSettings.autoMerge, task.id, createMR]);
 
   const currentStepIndex = task.currentStep >= 0 ? task.currentStep : 0;
   const phase: PipelinePhase = task.phase || 'developing';
@@ -84,8 +132,9 @@ export function PipelineBar({ task }: PipelineBarProps) {
   /** 根据 phase 直接渲染按钮 — 每个 phase 有明确的主/次操作 */
   const renderActions = () => {
     switch (phase) {
-      // ====== 未开始 ======
+      // ====== 未开始 / 第一步失败重试 ======
       case 'pending': {
+        if (task.status === 'running') return null; // 正在执行，不显示按钮
         const branchError = task.steps.find(s => s.key === 'branch')?.status === 'error';
         return (
           <Space size={6}>
@@ -116,7 +165,7 @@ export function PipelineBar({ task }: PipelineBarProps) {
           return (
             <Space size={6}>
               <Button type="primary" icon={<PullRequestOutlined />} size="small"
-                onClick={() => createMR(task.id)} loading={loading}>
+                onClick={handleOpenCreateMRModal} loading={loading}>
                 {mrError ? '重试创建MR' : '创建MR'}
               </Button>
               <Button icon={<EditOutlined />} size="small"
@@ -187,20 +236,33 @@ export function PipelineBar({ task }: PipelineBarProps) {
       // ====== 同步错误暂停 ======
       case 'paused_sync_error': {
         const isConflict = (task.error || '').includes('冲突');
-        // 冲突：先提交解决结果，再继续同步
+        // 冲突：在工作区解决冲突后点击"已解决，继续"；也可取消变基
         // 未提交：先提交代码，再同步
         return (
           <Space size={6}>
-            <Button type="primary" icon={isConflict ? <SyncOutlined /> : <EditOutlined />} size="small"
-              onClick={isConflict ? () => syncRemote(task.id) : () => setCommitModalOpen(true)}
-              loading={loading}>
-              {isConflict ? '继续同步' : '提交代码'}
-            </Button>
-            <Button icon={isConflict ? <EditOutlined /> : <ReloadOutlined />} size="small"
-              onClick={isConflict ? () => setCommitModalOpen(true) : () => syncRemote(task.id)}
-              loading={!isConflict ? loading : false}>
-              {isConflict ? '提交代码' : '同步远程'}
-            </Button>
+            {isConflict ? (
+              <>
+                <Button type="primary" icon={<CheckCircleOutlined />} size="small"
+                  onClick={() => rebaseContinue(task.id)} loading={loading}>
+                  已解决，继续
+                </Button>
+                <Button danger icon={<CloseCircleOutlined />} size="small"
+                  onClick={() => abortRebase(task.id)} loading={loading}>
+                  取消变基
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button type="primary" icon={<EditOutlined />} size="small"
+                  onClick={() => setCommitModalOpen(true)} loading={loading}>
+                  提交代码
+                </Button>
+                <Button icon={<ReloadOutlined />} size="small"
+                  onClick={() => syncRemote(task.id)} loading={loading}>
+                  同步远程
+                </Button>
+              </>
+            )}
             <DeleteBtn />
           </Space>
         );
@@ -411,6 +473,39 @@ export function PipelineBar({ task }: PipelineBarProps) {
           autoSize={{ minRows: 2, maxRows: 4 }}
           maxLength={200}
         />
+      </Modal>
+
+      <Modal
+        title="创建 MR"
+        open={createMRModalOpen}
+        onOk={() => {
+          setCreateMRModalOpen(false);
+          setMrCommitMessage('');
+          createMR(task.id, mrCommitMessage.trim() || undefined);
+        }}
+        onCancel={() => {
+          setCreateMRModalOpen(false);
+          setMrCommitMessage('');
+        }}
+        okText="创建"
+        cancelText="取消"
+        centered
+      >
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {task.mrSettings.squash ? '压缩提交消息（可选）' : '合并提交消息（可选）'}
+          </Text>
+        </div>
+        <Input.TextArea
+          value={mrCommitMessage}
+          onChange={(e) => setMrCommitMessage(e.target.value)}
+          placeholder={task.mrSettings.squash ? '留空则自动拼接所有提交消息' : '留空则使用默认消息'}
+          autoSize={{ minRows: 2, maxRows: 4 }}
+          maxLength={500}
+        />
+        <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
+          提示：此消息将作为自动合并时的提交消息
+        </div>
       </Modal>
     </div>
   );

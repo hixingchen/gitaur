@@ -45,6 +45,8 @@ export interface MRSettings {
   title?: string;
   description?: string;
   squash: boolean;
+  squashCommitMessage?: string;
+  mergeCommitMessage?: string;
   deleteBranchAfterMerge: boolean;
   autoMerge: boolean;
   targetBranch: string;
@@ -67,6 +69,7 @@ export interface PipelineTask {
   mrIid?: number;
   mrUrl?: string;
   mrPollStatus?: MrPollStatus;
+  squashCommitMessage?: string;
   error?: string;
   createdAt: number;
   updatedAt: number;
@@ -95,7 +98,7 @@ interface PipelineState {
   commitCode: (taskId: string, message?: string) => Promise<void>;
   syncRemote: (taskId: string) => Promise<void>;
   pushRemote: (taskId: string) => Promise<void>;
-  createMR: (taskId: string) => Promise<void>;
+  createMR: (taskId: string, commitMessage?: string) => Promise<void>;
   checkMergeStatus: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   switchRepo: (repoPath: string | null) => void;
@@ -605,7 +608,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   // 创建 MR
-  createMR: async (taskId: string) => {
+  createMR: async (taskId: string, commitMessage?: string) => {
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
     if (ctx.task.status === 'running') return; // 防止并发执行
@@ -653,11 +656,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
                 description: task.mrSettings.description || '',
                 remove_source_branch: task.mrSettings.deleteBranchAfterMerge,
                 squash: task.mrSettings.squash,
-                merge_when_pipeline_succeeds: task.mrSettings.autoMerge,
+                squash_commit_message: task.mrSettings.squash ? commitMessage : undefined,
               },
             );
 
-            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url };
+            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url, squashCommitMessage: commitMessage };
             currentTask = updateStep(currentTask, 'mr', {
               status: 'finish', endTime: Date.now(), description: `MR !${mr.iid}`,
             });
@@ -934,7 +937,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
           const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? resetTask : t));
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
           persistTasks(newTasksByRepo);
-          return { tasksByRepo: newTasksByRepo };
+          return {
+            tasksByRepo: newTasksByRepo,
+            currentTask: state.currentTask?.id === taskId ? resetTask : state.currentTask,
+          };
         });
       }
     } catch (e) {
@@ -1099,6 +1105,27 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         else if (detailed === 'mergeable') newStatus = 'mergeable';
       }
 
+      // 自动合并：MR 可合并且开启了自动合并
+      if (newStatus === 'mergeable' && task.mrSettings.autoMerge && task.mrIid) {
+        try {
+          const squashCommitMsg = task.mrSettings.squash ? task.squashCommitMessage : undefined;
+          await service.mergeMergeRequest(
+            currentProject.path_with_namespace,
+            task.mrIid,
+            {
+              squash: task.mrSettings.squash,
+              should_remove_source_branch: task.mrSettings.deleteBranchAfterMerge,
+              squash_commit_message: squashCommitMsg,
+            },
+          );
+          // 合并成功，重新轮询获取最终状态
+          return;
+        } catch (e) {
+          console.warn('[pollMrStatus] 自动合并失败:', e);
+          // 合并失败继续走正常状态更新流程
+        }
+      }
+
       // 检查是否需要执行清理（MR 已合并但清理未完成）
       const cleanupStep = task.steps.find((s) => s.key === 'cleanup');
       // cleanup 为 'wait' 或 'process'（中断的清理）都需要执行
@@ -1153,26 +1180,39 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!repoPath) return;
 
     try {
+      // 先 stage 所有已解决的文件
+      await invoke('git_stage_all', { repoPath });
+      // 再继续 rebase
       await invoke('git_rebase_continue', { repoPath });
+      await useRepoStore.getState().refreshStatus();
 
       const { tasksByRepo } = get();
       const tasks = tasksByRepo[repoPath] || [];
       const task = tasks.find((t) => t.id === taskId);
       if (task) {
-        const updatedTask = updateStep(task, 'sync', {
+        let updatedTask = updateStep(task, 'sync', {
           status: 'finish', endTime: Date.now(), description: '已变基',
         });
-        // 同步完成，设置为暂停，等待用户点击下一步
-        const pausedTask = setTaskStatus(updatedTask, 'paused');
+        updatedTask = setTaskStatus(updatedTask, 'paused');
+        updatedTask = { ...updatedTask, phase: 'developing' as PipelinePhase };
         set((state) => {
-          const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? pausedTask : t));
+          const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updatedTask : t));
           const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
           persistTasks(newTasksByRepo);
-          return { tasksByRepo: newTasksByRepo };
+          return {
+            tasksByRepo: newTasksByRepo,
+            currentTask: state.currentTask?.id === taskId ? updatedTask : state.currentTask,
+          };
         });
+        message.success('变基完成');
       }
     } catch (e) {
-      set({ error: `继续 rebase 失败: ${e}` });
+      const errorMsg = String(e);
+      if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
+        message.error('仍有未解决的冲突，请检查文件');
+      } else {
+        message.error(`继续 rebase 失败: ${errorMsg}`);
+      }
     }
   },
 
@@ -1292,18 +1332,23 @@ async function executeCleanup(
       console.warn('删除本地分支失败（可能已删除）:', e);
     }
 
-    // 3. 删除远程分支
-    try {
-      await invoke('git_push', {
-        repoPath,
-        remote: 'origin',
-        force: false,
-        delete: true,
-        branch: task.branchName,
-      });
-    } catch (e) {
-      // 远程分支可能已经不存在，忽略
-      console.warn('删除远程分支失败（可能已删除）:', e);
+    // 3. 轮询检查远程分支是否已删除（GitLab 异步删除，最多等待 3 次）
+    let remoteDeleted = false;
+    const remoteBranch = `remotes/origin/${task.branchName}`;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const branchOutput = await invoke<string>('git_branch_list', { repoPath });
+        if (!branchOutput.includes(remoteBranch)) {
+          remoteDeleted = true;
+          break;
+        }
+      } catch {
+        // 检查失败，继续尝试
+      }
+      if (i < 2) {
+        // 等待 500ms 再检查（最后一次不等待）
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
 
     // 4. 执行 fetch（含 prune）清理远程已删除的分支引用
@@ -1312,7 +1357,7 @@ async function executeCleanup(
     // 5. 静默刷新状态（不触发 loading，避免 UI 卡顿）
     await useRepoStore.getState().refreshStatusSilent();
 
-    // 7. 移除任务分支标签
+    // 6. 移除任务分支标签
     try {
       await useBranchTagStore.getState().removeTag(repoPath, task.branchName);
     } catch {
@@ -1321,7 +1366,7 @@ async function executeCleanup(
 
     // 7. 更新为成功状态
     task = updateStep(task, 'cleanup', {
-      status: 'finish', endTime: Date.now(), description: '已清理',
+      status: 'finish', endTime: Date.now(), description: remoteDeleted ? '已清理' : '已清理（远程分支可能未删除）',
     });
     task = setTaskStatus(task, 'success');
     task = { ...task, phase: 'finished' as PipelinePhase };

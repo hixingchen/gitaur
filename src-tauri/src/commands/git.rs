@@ -253,23 +253,31 @@ pub fn get_log(
     repo_path: String,
     max_count: Option<usize>,
     branch: Option<String>,
+    base_ref: Option<String>,
 ) -> Result<Vec<LogEntry>, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let count = max_count.unwrap_or(100).to_string();
     let mut args: Vec<&str> = vec![
         "log",
-        "--all",
         "--format=%H%x00%P%x00%an%x00%ae%x00%ad%x00%s%x00%d",
         "--date=format:%Y-%m-%d %H:%M:%S",
         "--max-count",
         &count,
     ];
 
-    let branch_str;
-    if let Some(ref b) = branch {
+    let range_str;
+    if let (Some(ref b), Some(ref base)) = (&branch, &base_ref) {
+        // 范围查询：base..branch，只返回 branch 独有的提交
         validate_ref(b)?;
-        branch_str = b.clone();
-        args.push(&branch_str);
+        validate_ref(base)?;
+        range_str = format!("{}..{}", base, b);
+        args.push(&range_str);
+    } else if let Some(ref b) = branch {
+        validate_ref(b)?;
+        args.push(b);
+    } else {
+        // 只有在不指定分支时才使用 --all
+        args.push("--all");
     }
 
     let output = executor::execute(&repo_path, &args)?;
@@ -329,6 +337,14 @@ pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>) -> Resu
 pub fn git_rebase(repo_path: String, onto: String) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&onto)?;
+
+    // 如果有未完成的 rebase，先自动 abort
+    let rebase_dir = std::path::Path::new(&repo_path).join(".git").join("rebase-merge");
+    let rebase_apply = std::path::Path::new(&repo_path).join(".git").join("rebase-apply");
+    if rebase_dir.exists() || rebase_apply.exists() {
+        let _ = executor::execute(&repo_path, &["rebase", "--abort"]);
+    }
+
     let output = executor::execute(&repo_path, &["rebase", &onto])?;
     if output.exit_code != 0 {
         return Err(format!("{}\n{}", output.stdout, output.stderr));
@@ -700,6 +716,16 @@ pub fn git_branch_rename(
     }
     args.push(&new_name);
     let output = executor::execute(&repo_path, &args)?;
+    if !output.is_success() {
+        return Err(output.error_message().unwrap_or("Unknown error").to_string());
+    }
+    Ok(output.stdout)
+}
+
+#[tauri::command]
+pub fn git_branch_list(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    let output = executor::execute(&repo_path, &["branch", "-a"])?;
     if !output.is_success() {
         return Err(output.error_message().unwrap_or("Unknown error").to_string());
     }

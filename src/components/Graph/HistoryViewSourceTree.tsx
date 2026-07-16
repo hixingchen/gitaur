@@ -10,17 +10,12 @@ import { CommitDetailPanel } from './CommitDetailPanel';
 import { SectionErrorBoundary } from '../SectionErrorBoundary';
 import s from './HistoryView.module.css';
 
-const ROW_H = 44;
-const LANE_W = 22;
-const GRAPH_PAD = 16;
-const DOT_R = 5;
+const LANE_W = 24;
 
-// ====== 相对时间 ======
 function formatRelativeTime(dateStr: string): string {
   try {
     const d = new Date(dateStr);
-    const now = new Date();
-    const diff = now.getTime() - d.getTime();
+    const diff = Date.now() - d.getTime();
     const min = Math.floor(diff / 60000);
     const hr = Math.floor(diff / 3600000);
     const day = Math.floor(diff / 86400000);
@@ -29,12 +24,9 @@ function formatRelativeTime(dateStr: string): string {
     if (hr < 24) return `${hr}小时前`;
     if (day < 30) return `${day}天前`;
     return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
-  } catch {
-    return dateStr;
-  }
+  } catch { return dateStr; }
 }
 
-// ====== 高亮 ======
 function HL({ text, q }: { text: string; q: string }) {
   if (!q) return <>{text}</>;
   const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
@@ -43,95 +35,75 @@ function HL({ text, q }: { text: string; q: string }) {
   )}</>;
 }
 
-// ====== 统一 SVG 图形 — 双干线 + 水平连接 ======
-function GraphSVG({ commits, maxLane }: { commits: LaneCommit[]; maxLane: number }) {
-  const width = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
-  const height = commits.length * ROW_H;
-  const LX = (lane: number) => lane * LANE_W + GRAPH_PAD;
-  const RY = (i: number) => i * ROW_H + ROW_H / 2;
-
-  const hashIndex = useMemo(() => new Map(commits.map((c, i) => [c.hash, i])), [commits]);
-  const hashLane = useMemo(() => new Map(commits.map(c => [c.hash, c.lane])), [commits]);
-
-  // 收集所有出现过的 lane
-  const usedLanes = useMemo(() => {
-    const set = new Set<number>();
-    commits.forEach(c => set.add(c.lane));
-    return Array.from(set).sort();
-  }, [commits]);
-
+// ====== 图形区域 — 纯 CSS div ======
+function GraphLane({ commit, maxLane }: { commit: LaneCommit; maxLane: number }) {
   return (
-    <svg width={width} height={height} style={{ display: 'block' }}>
-      {/* 每条 lane 一根从头到尾的垂直线 */}
-      {usedLanes.map(lane => (
-        <line key={`v-${lane}`}
-          x1={LX(lane)} y1={0} x2={LX(lane)} y2={height}
-          stroke={BRANCH_COLORS[lane % BRANCH_COLORS.length]}
-          strokeWidth={2} strokeLinecap="round"
-        />
-      ))}
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      height: '100%',
+      width: maxLane * LANE_W,
+      flexShrink: 0,
+      position: 'relative',
+    }}>
+      {/* 每个 lane 一列 */}
+      {Array.from({ length: maxLane }, (_, lane) => {
+        const isCurrent = lane === commit.lane;
+        const color = BRANCH_COLORS[lane % BRANCH_COLORS.length];
 
-      {/* 父子连线 — 只有不同 lane 时画水平连接 */}
-      {commits.map((c, i) => {
-        const cx = LX(c.lane);
-        const cy = RY(i);
-        return c.parents.map(pHash => {
-          const pIdx = hashIndex.get(pHash);
-          const pLane = hashLane.get(pHash);
-          if (pIdx === undefined || pLane === undefined || pIdx <= i) return null;
-          if (c.lane === pLane) return null;
-
-          const px = LX(pLane);
-          const py = RY(pIdx);
-          const color = BRANCH_COLORS[pLane % BRANCH_COLORS.length];
-
-          return (
-            <path key={`${c.hash}-${pHash}`}
-              d={`M ${cx} ${cy} L ${px} ${cy} L ${px} ${py}`}
-              fill="none" stroke={color} strokeWidth={2}
-              strokeLinecap="round" strokeLinejoin="round"
-            />
-          );
-        });
-      })}
-
-      {/* 圆点 */}
-      {commits.map((c, i) => {
-        const cx = LX(c.lane);
-        const cy = RY(i);
         return (
-          <g key={c.hash}>
-            {c.isBranchTip && (
-              <circle cx={cx} cy={cy} r={DOT_R + 5}
-                fill="none" stroke={c.color} strokeWidth={1.5} opacity={0.15} />
+          <div key={lane} style={{
+            width: LANE_W,
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+          }}>
+            {/* 垂直线 */}
+            <div style={{
+              position: 'absolute',
+              left: '50%',
+              top: 0,
+              bottom: 0,
+              width: 2,
+              marginLeft: -1,
+              background: color,
+              opacity: isCurrent ? 1 : 0.3,
+            }} />
+
+            {/* 当前 commit 的圆点 */}
+            {isCurrent && (
+              <div style={{
+                width: commit.isBranchTip ? 12 : 10,
+                height: commit.isBranchTip ? 12 : 10,
+                borderRadius: '50%',
+                background: commit.isBranchTip ? color : 'var(--ant-color-bg-container, #fff)',
+                border: `2px solid ${color}`,
+                zIndex: 1,
+                boxShadow: commit.isBranchTip ? `0 0 0 3px ${color}20` : 'none',
+              }} />
             )}
-            <circle cx={cx} cy={cy}
-              r={c.isBranchTip ? DOT_R + 1.5 : DOT_R}
-              fill={c.isBranchTip ? c.color : 'var(--ant-color-bg-container, #fff)'}
-              stroke={c.color} strokeWidth={2}
-            />
-            {c.isMerge && (
-              <circle cx={cx} cy={cy} r={2}
-                fill="var(--ant-color-bg-container, #fff)" />
-            )}
-          </g>
+          </div>
         );
       })}
-    </svg>
+    </div>
   );
 }
 
-// ====== 提交行（纯文字） ======
-const CommitRow = ({ commit, isSelected, query, onSelect }: {
-  commit: LaneCommit; isSelected: boolean; query: string; onSelect: () => void;
+// ====== 提交行 ======
+const CommitRow = ({ commit, maxLane, isSelected, query, onSelect }: {
+  commit: LaneCommit; maxLane: number;
+  isSelected: boolean; query: string; onSelect: () => void;
 }) => (
-  <div
-    className={isSelected ? s.commitRowSelected : s.commitRow}
-    role="button" tabIndex={-1} onClick={onSelect}
-  >
+  <div className={isSelected ? s.commitRowSelected : s.commitRow}
+    role="button" tabIndex={-1} onClick={onSelect}>
+    <GraphLane commit={commit} maxLane={maxLane} />
     <div className={s.commitBody}>
       <div className={s.commitMsgRow}>
-        <span className={s.commitMsg}><HL text={commit.message.split('\n')[0]} q={query} /></span>
+        <span className={s.commitMsg}>
+          <HL text={commit.message.split('\n')[0]} q={query} />
+        </span>
         <div className={s.refTags}>
           {commit.refs.filter(r => r.startsWith('tag: ')).map((ref, idx) => (
             <span key={idx} className={s.refTag}
@@ -182,17 +154,13 @@ export function HistoryViewSourceTree() {
   }, [logEntries, debouncedSearch]);
 
   const { commits, maxLane } = useMemo(() => computeTopology(filtered), [filtered]);
-  const graphWidth = (maxLane + 1) * LANE_W + GRAPH_PAD * 2;
 
   useEffect(() => {
     if (!selectedCommit || !listRef.current) return;
     const idx = commits.findIndex(c => c.hash === selectedCommit);
     if (idx < 0) return;
-    const top = idx * ROW_H;
-    const bottom = top + ROW_H;
-    const { scrollTop, clientHeight } = listRef.current;
-    if (top < scrollTop) listRef.current.scrollTop = top;
-    else if (bottom > scrollTop + clientHeight) listRef.current.scrollTop = bottom - clientHeight;
+    const el = listRef.current.children[0]?.children[idx] as HTMLElement;
+    if (el) el.scrollIntoView({ block: 'nearest' });
   }, [selectedCommit, commits]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -231,24 +199,16 @@ export function HistoryViewSourceTree() {
           ) : commits.length === 0 ? (
             <Empty description={search ? '无匹配' : '暂无提交'} style={{ marginTop: 80 }} />
           ) : (
-            <div style={{ position: 'relative' }}>
-              {/* SVG 背景层 */}
-              <div style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
-                <GraphSVG commits={commits} maxLane={maxLane} />
-              </div>
-
-              {/* 提交行 — 左侧留出图形空间 */}
-              {commits.map((commit) => (
-                <div key={commit.hash} style={{ marginLeft: graphWidth }}>
-                  <CommitRow
-                    commit={commit}
-                    isSelected={selectedCommit === commit.hash}
-                    query={debouncedSearch.trim().toLowerCase()}
-                    onSelect={() => setSelectedCommit(selectedCommit === commit.hash ? null : commit.hash)}
-                  />
-                </div>
-              ))}
-            </div>
+            commits.map((commit) => (
+              <CommitRow
+                key={commit.hash}
+                commit={commit}
+                maxLane={maxLane}
+                isSelected={selectedCommit === commit.hash}
+                query={debouncedSearch.trim().toLowerCase()}
+                onSelect={() => setSelectedCommit(selectedCommit === commit.hash ? null : commit.hash)}
+              />
+            ))
           )}
         </div>
       </div>

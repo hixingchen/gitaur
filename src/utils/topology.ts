@@ -1,13 +1,8 @@
 import type { LogEntry } from '../types/git';
 
-/** 分支颜色配置（30 色，减少多分支时的颜色重复） */
 export const BRANCH_COLORS = [
   '#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#722ed1',
   '#13c2c2', '#eb2f96', '#f759ab', '#fa8c16', '#2f54eb',
-  '#a0d911', '#fadb14', '#ff7a45', '#9254de', '#36cfc9',
-  '#ff85c0', '#597ef7', '#73d13d', '#ffc53d', '#ff4d4f',
-  '#b37feb', '#40a9ff', '#95de64', '#ffd666', '#ff9c6e',
-  '#85a5ff', '#5cdbd3', '#b5f5ec', '#d3adf7', '#ffadd2',
 ];
 
 export interface LaneCommit {
@@ -24,85 +19,64 @@ export interface LaneCommit {
 }
 
 /**
- * 计算提交拓扑 — 为每个 commit 分配 lane 和颜色。
- * Graph.tsx 和 HistoryViewSourceTree.tsx 共用此函数。
+ * 拓扑 — 只有 2 条线，绝不创建新 lane
+ * lane 0 = main/master
+ * lane 1 = develop (及所有其他分支)
  */
 export function computeTopology(entries: LogEntry[]): { commits: LaneCommit[]; maxLane: number } {
   if (entries.length === 0) return { commits: [], maxLane: 0 };
 
-  const reversed = [...entries].reverse();
   const laneOf = new Map<string, number>();
-  const colorOf = new Map<string, string>();
-  let nextLane = 0;
-  const freeLanes: number[] = [];
 
-  function allocLane(): { lane: number; color: string } {
-    const lane = freeLanes.length > 0 ? freeLanes.shift()! : nextLane++;
-    return { lane, color: BRANCH_COLORS[lane % BRANCH_COLORS.length] };
+  // 解析分支名
+  function getBranch(refs: string[]): string | null {
+    for (const r of refs) {
+      if (r === 'HEAD' || r.startsWith('HEAD -> ')) continue;
+      const clean = r.replace('HEAD -> ', '').replace('tag: ', '');
+      if (clean.startsWith('origin/')) return clean.replace('origin/', '');
+      return clean;
+    }
+    return null;
   }
 
-  // 预构建 parent -> children 映射，避免 O(n²) 查找
-  const childrenMap = new Map<string, LogEntry[]>();
-  for (const entry of entries) {
-    for (const parentHash of entry.parents) {
-      const list = childrenMap.get(parentHash);
-      if (list) {
-        list.push(entry);
-      } else {
-        childrenMap.set(parentHash, [entry]);
-      }
+  // 第一遍：main/master → lane 0，其他 → lane 1
+  for (const e of entries) {
+    const branch = getBranch(e.refs);
+    if (branch === 'main' || branch === 'master') {
+      laneOf.set(e.hash, 0);
+    } else {
+      laneOf.set(e.hash, 1);
     }
   }
 
-  for (const commit of reversed) {
-    const children = childrenMap.get(commit.hash) || [];
-    let lane: number;
-    let color: string;
-
-    if (children.length === 0) {
-      const a = allocLane();
-      lane = a.lane; color = a.color;
-    } else if (children.length === 1) {
-      const childLane = laneOf.get(children[0].hash);
-      if (childLane !== undefined) {
-        lane = childLane;
-        color = colorOf.get(children[0].hash)!;
+  // 第二遍：从旧到新，无 lane 的继承第一个父提交的 lane
+  const reversed = [...entries].reverse();
+  const entryMap = new Map(entries.map(e => [e.hash, e]));
+  for (const e of reversed) {
+    if (laneOf.has(e.hash)) continue;
+    // 继承第一个父提交的 lane
+    if (e.parents.length > 0) {
+      const parentLane = laneOf.get(e.parents[0]);
+      if (parentLane !== undefined) {
+        laneOf.set(e.hash, parentLane);
       } else {
-        const a = allocLane();
-        lane = a.lane; color = a.color;
+        laneOf.set(e.hash, 1);
       }
     } else {
-      const childLane = laneOf.get(children[0].hash);
-      if (childLane !== undefined) {
-        lane = childLane;
-        color = colorOf.get(children[0].hash)!;
-      } else {
-        const a = allocLane();
-        lane = a.lane; color = a.color;
-      }
+      laneOf.set(e.hash, 1);
     }
-
-    if (commit.parents.length > 1) {
-      for (let i = 1; i < commit.parents.length; i++) {
-        const parentLane = laneOf.get(commit.parents[i]);
-        if (parentLane !== undefined && parentLane !== lane) {
-          freeLanes.push(parentLane);
-        }
-      }
-    }
-
-    laneOf.set(commit.hash, lane);
-    colorOf.set(commit.hash, color);
   }
 
-  const commits = entries.map(e => {
+  // 构建结果
+  const commits: LaneCommit[] = entries.map(e => {
     const refNames = e.refs
       .filter(r => r !== 'HEAD' && r !== 'HEAD -> main' && r !== 'HEAD -> master')
       .map(r => r.replace('HEAD -> ', ''));
+    const lane = laneOf.get(e.hash) ?? 1;
     return {
       hash: e.hash,
-      lane: laneOf.get(e.hash) ?? 0,
-      color: colorOf.get(e.hash) ?? BRANCH_COLORS[0],
+      lane,
+      color: BRANCH_COLORS[lane % BRANCH_COLORS.length],
       parents: e.parents,
       refs: refNames,
       message: e.message,
@@ -113,6 +87,5 @@ export function computeTopology(entries: LogEntry[]): { commits: LaneCommit[]; m
     };
   });
 
-  const maxLane = Math.max(1, nextLane);
-  return { commits, maxLane };
+  return { commits, maxLane: 2 };
 }
