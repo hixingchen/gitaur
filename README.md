@@ -19,7 +19,7 @@
 
 ## 简介
 
-Gitaur 是一款轻量、高性能的 Git 桌面客户端，基于 Tauri v2（Rust + Web）构建。提供直观的图形界面来管理 Git 仓库，支持本地 Git 操作、分支管理、提交历史可视化，以及 GitLab 集成。
+Gitaur 是一款轻量级 Git 桌面客户端，基于 Tauri v2（Rust + Web）构建，深度集成 GitLab，一站式 GitFlow 工作流管理。提供直观的图形界面来管理 Git 仓库，支持本地 Git 操作、分支管理、提交历史可视化。
 
 ## 功能特性
 
