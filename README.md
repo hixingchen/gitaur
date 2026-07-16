@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="#功能特性">功能特性</a> •
+  <a href="#gitflow-开发规范">GitFlow 开发规范</a> •
   <a href="#技术栈">技术栈</a> •
   <a href="#快速开始">快速开始</a> •
   <a href="#开发指南">开发指南</a> •
@@ -59,6 +60,117 @@ Gitaur 是一款轻量、高性能的 Git 桌面客户端，基于 Tauri v2（Ru
 - Git 用户信息配置（用户名、邮箱）
 - GitLab 连接配置（URL、Token）
 - 主题切换（深色 / 浅色）
+
+---
+
+## GitFlow 开发规范
+
+本项目采用 **GitFlow** 分支模型进行开发。
+
+### 分支模型
+
+```
+main ──────────────────────────────────────→ 生产环境
+ ↑
+ ↑  hotfix/* ──→ 紧急修复，合回 main + develop
+ ↑
+develop ─────●───────●───────●────────────→ 集成分支
+              ↑       ↑       ↑
+              ↑       ↑       release/* ──→ 发版准备，合回 main + develop
+              ↑       ↑
+         feature/* feature/* ──→ 功能开发
+```
+
+### 分支类型
+
+| 分支 | 来源 | 目标 | 用途 |
+|------|------|------|------|
+| `main` | — | — | 生产环境，始终可部署 |
+| `develop` | — | — | 集成分支，功能汇合点 |
+| `feature/*` | develop | develop | 新功能开发 |
+| `bugfix/*` | develop | develop | 非紧急 bug 修复 |
+| `hotfix/*` | main | main + develop | 生产环境紧急修复 |
+| `release/*` | develop | main + develop | 发版准备（测试、版本号、changelog） |
+
+### 分支命名规范
+
+```
+feature/用户登录功能
+feature/订单列表优化
+bugfix/修复登录超时
+hotfix/修复支付接口异常
+release/v1.2.0
+```
+
+### 开发流程
+
+#### 1. 新功能开发（feature）
+
+```bash
+# 从 develop 创建功能分支
+git checkout develop
+git pull origin develop
+git checkout -b feature/新功能名
+
+# 开发 → 提交 → 推送
+git add .
+git commit -m "feat: 新功能描述"
+git push origin feature/新功能名
+
+# 在 GitLab 创建 MR → 目标分支 develop
+# 代码审查通过后合并到 develop
+```
+
+#### 2. Bug 修复（bugfix）
+
+```bash
+# 从 develop 创建修复分支
+git checkout -b bugfix/修复描述 develop
+
+# 修复 → 提交 → 推送 → 创建 MR → 合并到 develop
+```
+
+#### 3. 紧急修复（hotfix）
+
+```bash
+# 从 main 创建热修复分支
+git checkout main
+git pull origin main
+git checkout -b hotfix/紧急修复描述
+
+# 修复 → 提交 → 推送
+# 创建 MR → 目标分支 main
+# 同时 cherry-pick 或合并到 develop
+```
+
+#### 4. 发版准备（release）
+
+```bash
+# 从 develop 创建发版分支
+git checkout -b release/v1.2.0 develop
+
+# 测试、修 bug、改版本号、写 changelog
+# 创建 MR → 目标分支 main
+# 合并后在 main 打 tag
+git tag v1.2.0
+git push origin v1.2.0
+# 同时合并回 develop
+```
+
+### 合并策略
+
+本项目使用 **Squash Merge**，将功能分支的多个提交压缩为一个提交合入目标分支，保持主线历史清晰。
+
+### 冲突处理
+
+当 rebase 产生冲突时：
+
+1. 在编辑器中打开冲突文件，手动解决冲突
+2. 删除冲突标记（`<<<<<<<` `=======` `>>>>>>>`），保留正确内容
+3. 保存文件
+4. 在应用中点击 **"已解决，继续"**
+
+---
 
 ## 技术栈
 
