@@ -1,11 +1,9 @@
-import { Form, Input, Switch, Select, Space, Tag, Tooltip, Modal, Typography, theme, message } from 'antd';
+import { Form, Input, Switch, Select, Space, Tag, Tooltip, Modal, theme, message } from 'antd';
 import { BranchesOutlined } from '@ant-design/icons';
 import { usePipelineStore } from '../../stores/pipelineStore';
 import { useRepoStore } from '../../stores/repoStore';
 import { useViewStore } from '../../stores/viewStore';
 import { useBranchTagStore } from '../../stores/branchTagStore';
-
-const { Text } = Typography;
 
 interface CreateTaskModalProps {
   open: boolean;

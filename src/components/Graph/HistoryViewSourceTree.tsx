@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Input, Button, Tooltip, Spin, Empty } from 'antd';
 import { SearchOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons';
+import { invoke } from '@tauri-apps/api/core';
 import { useRepoStore } from '../../stores/repoStore';
 import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
 import type { LaneCommit } from '../../utils/topology';
@@ -10,20 +11,12 @@ import { CommitDetailPanel } from './CommitDetailPanel';
 import { SectionErrorBoundary } from '../SectionErrorBoundary';
 import s from './HistoryView.module.css';
 
-const LANE_W = 24;
+const LANE_W = 28;
 
-function formatRelativeTime(dateStr: string): string {
+function formatTime(dateStr: string): string {
   try {
-    const d = new Date(dateStr);
-    const diff = Date.now() - d.getTime();
-    const min = Math.floor(diff / 60000);
-    const hr = Math.floor(diff / 3600000);
-    const day = Math.floor(diff / 86400000);
-    if (min < 1) return '刚刚';
-    if (min < 60) return `${min}分钟前`;
-    if (hr < 24) return `${hr}小时前`;
-    if (day < 30) return `${day}天前`;
-    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+    // 后端格式: "2026-07-16 23:59:21"
+    return dateStr;
   } catch { return dateStr; }
 }
 
@@ -68,20 +61,21 @@ function GraphLane({ commit, maxLane }: { commit: LaneCommit; maxLane: number })
               bottom: 0,
               width: 2,
               marginLeft: -1,
-              background: color,
-              opacity: isCurrent ? 1 : 0.3,
+              background: isCurrent ? color : `${color}30`,
+              borderRadius: 1,
             }} />
 
             {/* 当前 commit 的圆点 */}
             {isCurrent && (
               <div style={{
-                width: commit.isBranchTip ? 12 : 10,
-                height: commit.isBranchTip ? 12 : 10,
+                width: commit.isBranchTip ? 14 : 10,
+                height: commit.isBranchTip ? 14 : 10,
                 borderRadius: '50%',
                 background: commit.isBranchTip ? color : 'var(--ant-color-bg-container, #fff)',
-                border: `2px solid ${color}`,
+                border: `2.5px solid ${color}`,
                 zIndex: 1,
-                boxShadow: commit.isBranchTip ? `0 0 0 3px ${color}20` : 'none',
+                boxShadow: commit.isBranchTip ? `0 0 0 4px ${color}18` : 'none',
+                transition: 'all 0.15s ease',
               }} />
             )}
           </div>
@@ -116,7 +110,7 @@ const CommitRow = ({ commit, maxLane, isSelected, query, onSelect }: {
       <div className={s.commitMeta}>
         <span className={s.commitAuthor}><HL text={commit.author} q={query} /></span>
         <span className={s.commitDot} />
-        <span>{formatRelativeTime(commit.date)}</span>
+        <span>{formatTime(commit.date)}</span>
         <span className={s.commitDot} />
         <span className={s.commitHash}><HL text={commit.hash.slice(0, 7)} q={query} /></span>
         <Tooltip title="复制完整 hash">
@@ -133,6 +127,7 @@ export function HistoryViewSourceTree() {
   const logEntries = useRepoStore((s) => s.logEntries);
   const logLoading = useRepoStore((s) => s.logLoading);
   const loadLog = useRepoStore((s) => s.loadLog);
+  const repoPath = useRepoStore((s) => s.repoPath);
   const repoInfo = useRepoStore((s) => s.repoInfo);
   const selectedCommit = useRepoStore((s) => s.selectedCommit);
   const setSelectedCommit = useRepoStore((s) => s.setSelectedCommit);
@@ -142,6 +137,17 @@ export function HistoryViewSourceTree() {
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { if (repoInfo) loadLog(2000); }, [repoInfo]);
+
+  // 刷新：先 fetch 远程，再加载日志
+  const handleRefresh = useCallback(async () => {
+    if (!repoPath) return;
+    try {
+      await invoke('git_fetch', { repoPath });
+    } catch (e) {
+      console.warn('fetch 失败（不影响本地日志）:', e);
+    }
+    await loadLog(2000);
+  }, [repoPath, loadLog]);
 
   const filtered = useMemo(() => {
     const q = debouncedSearch.trim().toLowerCase();
@@ -179,15 +185,15 @@ export function HistoryViewSourceTree() {
       <div className={s.listPanel}>
         <div className={s.toolbar}>
           <Input size="small" allowClear placeholder="搜索提交..."
-            prefix={<SearchOutlined style={{ color: '#bbb', fontSize: 12 }} />}
+            prefix={<SearchOutlined style={{ color: '#8c8c8c', fontSize: 13 }} />}
             value={search} onChange={(e) => setSearch(e.target.value)}
-            style={{ width: 220 }} variant="borderless" />
+            style={{ width: 200 }} variant="borderless" />
           <span className={s.toolbarCount}>
             {search ? `${filtered.length}/${logEntries.length}` : `${logEntries.length}`}
           </span>
           <Tooltip title="刷新">
             <Button size="small" type="text" icon={<ReloadOutlined />}
-              onClick={() => loadLog(2000)} loading={logLoading} />
+              onClick={handleRefresh} loading={logLoading} />
           </Tooltip>
         </div>
 

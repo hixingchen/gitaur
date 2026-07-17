@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
-  Button, Tag, Space, Select, Divider, Typography, Tooltip, theme, message,
+  Button, Tag, Space, Select, Divider, Tooltip, theme, message,
 } from 'antd';
 import {
   PlusOutlined, SwapOutlined, BranchesOutlined,
@@ -18,7 +18,7 @@ import { PipelineBar, getTaskStatusTag } from './PipelineBar';
 import { CreateTaskModal } from './CreateTaskModal';
 import { FinishedPage, EmptyPage } from './PipelinePages';
 
-const { Text } = Typography;
+const EMPTY_TASKS: never[] = [];
 
 export function PipelinePanel() {
   const { token } = theme.useToken();
@@ -52,7 +52,7 @@ export function PipelinePanel() {
     ? (savedRepos.find((r) => r.path === repoPath)?.alias || repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || repoPath)
     : '';
 
-  const currentRepoTasks = usePipelineStore((s) => repoPath ? (s.tasksByRepo[repoPath] || []) : []);
+  const currentRepoTasks = usePipelineStore((s) => repoPath ? (s.tasksByRepo[repoPath] || EMPTY_TASKS) : EMPTY_TASKS);
   const allTasks = useMemo(
     () => currentRepoTasks.filter((t) => t.status !== 'success' && t.status !== 'cancelled'),
     [currentRepoTasks]

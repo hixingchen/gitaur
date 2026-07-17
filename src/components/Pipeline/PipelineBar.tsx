@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import {
-  Button, Steps, Tag, Space, Input, Modal, Typography, Tooltip, theme, message,
+  Button, Steps, Tag, Space, Input, Modal, Typography, theme, message,
 } from 'antd';
 import {
   PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined,
@@ -9,7 +9,7 @@ import {
   PullRequestOutlined, RocketOutlined, ClearOutlined,
   EditOutlined, SyncOutlined,
 } from '@ant-design/icons';
-import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus, type PipelinePhase, type MrPollStatus } from '../../stores/pipelineStore';
+import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus, type PipelinePhase } from '../../stores/pipelineStore';
 import { useRepoStore } from '../../stores/repoStore';
 
 const { Text } = Typography;
@@ -68,7 +68,6 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const abortRebase = usePipelineStore((s) => s.abortRebase);
   const rebaseContinue = usePipelineStore((s) => s.rebaseContinue);
   const loading = usePipelineStore((s) => s.loading);
-  const logEntries = useRepoStore((s) => s.logEntries);
   const loadLog = useRepoStore((s) => s.loadLog);
 
   const [deleteConfirm, setDeleteConfirm] = useState(false);

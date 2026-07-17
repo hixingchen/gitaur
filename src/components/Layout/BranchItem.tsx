@@ -1,4 +1,4 @@
-import { Tag, Button, Space, Dropdown, Tooltip, Typography, theme } from 'antd';
+import { Tag, Button, Space, Dropdown, Tooltip, theme } from 'antd';
 import {
   BranchesOutlined, PushpinOutlined, DeleteOutlined, SwapOutlined,
   CloudOutlined, EditOutlined, ArrowUpOutlined, ArrowDownOutlined,
@@ -7,8 +7,6 @@ import {
 import { TAG_CONFIG, type BranchTagType } from '../../stores/branchTagStore';
 import type { Branch } from '../../types/git';
 import s from './BranchPanel.module.css';
-
-const { Text } = Typography;
 
 export function shortBranchName(name: string): string {
   return name.replace(/^remotes\/[^/]+\//, '');

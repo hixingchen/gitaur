@@ -254,6 +254,8 @@ pub fn get_log(
     max_count: Option<usize>,
     branch: Option<String>,
     base_ref: Option<String>,
+    first_parent: Option<bool>,
+    no_merges: Option<bool>,
 ) -> Result<Vec<LogEntry>, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let count = max_count.unwrap_or(100).to_string();
@@ -265,7 +267,19 @@ pub fn get_log(
         &count,
     ];
 
+    // --first-parent: 只跟随第一个父提交，展示简洁单线历史
+    let use_first_parent = first_parent.unwrap_or(false);
+    if use_first_parent {
+        args.push("--first-parent");
+    }
+
+    // --no-merges: 隐藏合并提交，只显示实际代码提交
+    if no_merges.unwrap_or(false) {
+        args.push("--no-merges");
+    }
+
     let range_str;
+    let remote_ref_str;
     if let (Some(ref b), Some(ref base)) = (&branch, &base_ref) {
         // 范围查询：base..branch，只返回 branch 独有的提交
         validate_ref(b)?;
@@ -276,8 +290,42 @@ pub fn get_log(
         validate_ref(b)?;
         args.push(b);
     } else {
-        // 只有在不指定分支时才使用 --all
-        args.push("--all");
+        // 不指定分支 → 智能选择显示方式
+        let current_branch = executor::execute(&repo_path, &["branch", "--show-current"])?;
+        let branch_name = current_branch.stdout.trim();
+
+        if !branch_name.is_empty() {
+            // feature/xxx 分支 → 只显示相对于 develop 的差异提交
+            if branch_name.starts_with("feature/") {
+                // 尝试 origin/develop，不存在则用 develop
+                let has_remote_develop = executor::execute(
+                    &repo_path, &["rev-parse", "--verify", "origin/develop"]
+                );
+                let base = if has_remote_develop.is_ok() && has_remote_develop.unwrap().is_success() {
+                    "origin/develop"
+                } else {
+                    "develop"
+                };
+                remote_ref_str = format!("origin/{}", branch_name);
+                let check = executor::execute(&repo_path, &["rev-parse", "--verify", &remote_ref_str]);
+                if check.is_ok() && check.unwrap().is_success() {
+                    range_str = format!("{}..{}", base, remote_ref_str);
+                    args.push(&range_str);
+                } else {
+                    // 远程分支不存在，用本地
+                    range_str = format!("{}..{}", base, branch_name);
+                    args.push(&range_str);
+                }
+            } else {
+                // 非 feature 分支 → 显示远程跟踪分支（优先）或本地分支
+                remote_ref_str = format!("origin/{}", branch_name);
+                let check = executor::execute(&repo_path, &["rev-parse", "--verify", &remote_ref_str]);
+                if check.is_ok() && check.unwrap().is_success() {
+                    args.push(&remote_ref_str);
+                }
+                // 远程分支不存在时不添加，git log 默认用 HEAD
+            }
+        }
     }
 
     let output = executor::execute(&repo_path, &args)?;

@@ -108,6 +108,7 @@ interface PipelineState {
   closeMR: (taskId: string) => Promise<void>;
   reopenMR: (taskId: string) => Promise<void>;
   resumeDevelopment: (taskId: string) => void;
+  resumeFromConflict: (taskId: string) => Promise<void>;
   pollMrStatus: (taskId: string) => Promise<void>;
   checkAndCleanTasks: () => Promise<void>;
   clearError: () => void;
@@ -146,7 +147,7 @@ function makeUpdateTask(
 ): (updated: PipelineTask) => void {
   return (updated: PipelineTask) => {
     set((state) => {
-      const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updated : t));
+      const repoTasks = (state.tasksByRepo[repoPath] || []).map((t: PipelineTask) => (t.id === taskId ? updated : t));
       const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
       persistTasks(newTasksByRepo);
       return {
@@ -212,7 +213,6 @@ function inferPhase(task: PipelineTask): PipelinePhase {
   if (task.status === 'success' || task.status === 'cancelled') return 'finished';
   if (task.status === 'pending') return 'pending';
 
-  const develop = task.steps.find(s => s.key === 'develop');
   const sync = task.steps.find(s => s.key === 'sync');
   const push = task.steps.find(s => s.key === 'push');
   const mr = task.steps.find(s => s.key === 'mr');
@@ -656,11 +656,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
                 description: task.mrSettings.description || '',
                 remove_source_branch: task.mrSettings.deleteBranchAfterMerge,
                 squash: task.mrSettings.squash,
-                squash_commit_message: task.mrSettings.squash ? commitMessage : undefined,
+                squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
               },
             );
 
-            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url, squashCommitMessage: commitMessage };
+            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url, squashCommitMessage: commitMessage || undefined };
             currentTask = updateStep(currentTask, 'mr', {
               status: 'finish', endTime: Date.now(), description: `MR !${mr.iid}`,
             });
@@ -1108,7 +1108,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       // 自动合并：MR 可合并且开启了自动合并
       if (newStatus === 'mergeable' && task.mrSettings.autoMerge && task.mrIid) {
         try {
-          const squashCommitMsg = task.mrSettings.squash ? task.squashCommitMessage : undefined;
+          const squashCommitMsg = task.mrSettings.squash ? (task.squashCommitMessage || undefined) : undefined;
           await service.mergeMergeRequest(
             currentProject.path_with_namespace,
             task.mrIid,

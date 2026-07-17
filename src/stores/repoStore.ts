@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { RepoInfo, LogEntry, CommitDetail } from '../types/git';
 import { invoke } from '@tauri-apps/api/core';
+import { useViewStore } from './viewStore';
 
 // 请求 ID 计数器 — 防止并发请求竞态（旧响应覆盖新状态）
 let _statusRequestId = 0;
@@ -79,7 +80,21 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       invoke('stop_file_watcher').catch(() => {});
     }
     const reqId = ++_statusRequestId;
-    set({ repoPath: path, loading: true, error: null });
+    set({
+      repoPath: path,
+      repoInfo: null,  // 立即清除，防止组件用旧仓库的 repoInfo 配合新 repoPath
+      loading: true,
+      error: null,
+      // 清除旧仓库的日志状态
+      logEntries: [],
+      logBranch: null,
+      selectedCommit: null,
+      commitDetail: null,
+      selectedCommitFile: null,
+      commitFileDiff: null,
+    });
+    // 清除视图状态（选中的文件）
+    useViewStore.getState().setSelectedFile(null);
     try {
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath: path });
       if (reqId !== _statusRequestId) return;
@@ -119,7 +134,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         && oldInfo.currentBranch === info.currentBranch
         && oldInfo.ahead === info.ahead
         && oldInfo.behind === info.behind
-        && oldInfo.has_upstream === info.has_upstream
+        && oldInfo.hasUpstream === info.hasUpstream
         && oldInfo.status.length === info.status.length
         && oldInfo.status.every((old, i) => {
           const cur = info.status[i];
@@ -147,16 +162,30 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   loadLog: async (maxCount?: number, branch?: string | null, baseRef?: string) => {
-    const { repoPath } = get();
+    const { repoPath, repoInfo } = get();
     if (!repoPath) return;
     const reqId = ++_logRequestId;
-    set({ logLoading: true });
+    set({
+      logLoading: true,
+      selectedCommit: null,  // 清除选中状态，避免显示旧提交的详情
+      commitDetail: null,
+      selectedCommitFile: null,
+      commitFileDiff: null,
+    });
     try {
+      // 获取当前分支标签，决定是否隐藏合并提交
+      const { useBranchTagStore } = await import('./branchTagStore');
+      const branchTag = useBranchTagStore.getState().getTag(repoPath, repoInfo?.currentBranch || '');
+      // 主干分支保留合并记录，其他分支隐藏
+      const isMainline = branchTag === 'mainline';
+
       const entries = await invoke<LogEntry[]>('get_log', {
         repoPath,
         maxCount: maxCount ?? 100,
         branch: branch ?? null,
         baseRef: baseRef ?? null,
+        firstParent: false,  // 不用 --first-parent，保留 feature 分支的提交
+        noMerges: !isMainline,  // 主干分支保留合并记录，其他分支隐藏
       });
       if (reqId === _logRequestId) set({ logEntries: entries, logLoading: false });
     } catch (e) {

@@ -1,11 +1,11 @@
 import { useEffect, useMemo } from 'react';
 import { Empty, Spin, Typography, List, Tag, Button, Space, Tooltip } from 'antd';
-import { CloseOutlined, FileOutlined, CopyOutlined } from '@ant-design/icons';
+import { FileOutlined, CopyOutlined } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { copyText } from '../../utils/clipboard';
 import type { CommitFileChange } from '../../types/git';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const STATUS_COLOR: Record<string, string> = {
   M: 'var(--ant-color-primary, #1677ff)',
@@ -111,7 +111,6 @@ export function CommitDetailPanel() {
   const loadCommitDetail = useRepoStore((s) => s.loadCommitDetail);
   const loadCommitFileDiff = useRepoStore((s) => s.loadCommitFileDiff);
   const setSelectedCommitFile = useRepoStore((s) => s.setSelectedCommitFile);
-  const setSelectedCommit = useRepoStore((s) => s.setSelectedCommit);
 
   // 选中提交变化 → 加载详情
   useEffect(() => {
@@ -160,16 +159,15 @@ export function CommitDetailPanel() {
     <div style={{
       height: '100%', display: 'flex', flexDirection: 'column',
       background: 'var(--ant-color-bg-container)',
-      borderRadius: 10, border: '1px solid var(--ant-color-border-secondary)',
       overflow: 'hidden',
     }}>
       {/* 头部：提交信息 */}
       <div style={{
-        padding: '10px 12px', borderBottom: '1px solid var(--ant-color-border-secondary)',
-        display: 'flex', flexDirection: 'column', gap: 6,
+        padding: '16px 20px', borderBottom: '1px solid var(--ant-color-border-secondary)',
+        display: 'flex', flexDirection: 'column', gap: 8,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Text code style={{ fontSize: 11, color: '#faad14' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Text code style={{ fontSize: 12, color: '#faad14', background: 'rgba(250,173,20,0.1)', padding: '2px 6px', borderRadius: 4 }}>
             {commitDetail.hash.slice(0, 7)}
           </Text>
           <Tooltip title="复制完整 hash">
@@ -178,35 +176,31 @@ export function CommitDetailPanel() {
               onClick={() => copyText(commitDetail.hash)}
               style={{ color: 'var(--ant-color-text-tertiary)' }} />
           </Tooltip>
-          <Button type="text" size="small" icon={<CloseOutlined />}
-            aria-label="关闭详情面板"
-            onClick={() => setSelectedCommit(null)}
-            style={{ marginLeft: 'auto', color: 'var(--ant-color-text-tertiary)' }} />
         </div>
-        <Paragraph style={{ margin: 0, fontSize: 13, fontWeight: 500, whiteSpace: 'pre-wrap' }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--ant-color-text)', lineHeight: '20px' }}>
           {commitDetail.message}
-        </Paragraph>
-        <Space size={6} wrap>
-          <Text type="secondary" style={{ fontSize: 11 }}>{commitDetail.author}</Text>
-          <Text type="secondary" style={{ fontSize: 11 }}>·</Text>
-          <Text type="secondary" style={{ fontSize: 11 }}>{commitDetail.date}</Text>
-        </Space>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+          <span>{commitDetail.author}</span>
+          <span style={{ color: 'var(--ant-color-text-quaternary)' }}>·</span>
+          <span>{commitDetail.date}</span>
+        </div>
       </div>
 
       {/* 文件变更列表 */}
       <div style={{
-        padding: '8px 12px 4px', flexShrink: 0,
+        padding: '12px 20px 8px', flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--ant-color-text)' }}>
           文件变更 ({stats.files})
-        </Text>
-        <Space size={6} style={{ fontSize: 11 }}>
-          <span style={{ color: 'var(--ant-color-success)' }}>+{stats.additions}</span>
+        </span>
+        <span style={{ fontSize: 12 }}>
+          <span style={{ color: 'var(--ant-color-success)', marginRight: 8 }}>+{stats.additions}</span>
           <span style={{ color: 'var(--ant-color-error)' }}>-{stats.deletions}</span>
-        </Space>
+        </span>
       </div>
-      <div style={{ maxHeight: 180, overflow: 'auto', padding: '0 8px' }}>
+      <div style={{ flex: '0 0 auto', maxHeight: 240, overflow: 'auto', padding: '0 12px' }}>
         <List
           dataSource={commitDetail.files}
           size="small"
@@ -224,8 +218,8 @@ export function CommitDetailPanel() {
       {/* diff 展示 */}
       <div style={{ flex: 1, minHeight: 0, borderTop: '1px solid var(--ant-color-border-secondary)', display: 'flex', flexDirection: 'column' }}>
         <div style={{
-          padding: '6px 12px', fontSize: 11, color: 'var(--ant-color-text-tertiary)',
-          background: 'var(--ant-color-fill-secondary)',
+          padding: '8px 16px', fontSize: 12, color: 'var(--ant-color-text-secondary)',
+          background: 'var(--ant-color-fill-tertiary)',
           fontFamily: 'monospace',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>

@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { Empty, Spin } from 'antd';
 import { useRepoStore } from '../../stores/repoStore';
 import { computeTopology, BRANCH_COLORS } from '../../utils/topology';
-import type { LaneCommit } from '../../utils/topology';
 import type { LogEntry } from '../../types/git';
 
 interface GraphProps {
