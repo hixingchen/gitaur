@@ -162,7 +162,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   loadLog: async (maxCount?: number, branch?: string | null, baseRef?: string) => {
-    const { repoPath, repoInfo } = get();
+    const { repoPath } = get();
     if (!repoPath) return;
     const reqId = ++_logRequestId;
     set({
@@ -173,19 +173,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       commitFileDiff: null,
     });
     try {
-      // 获取当前分支标签，决定是否隐藏合并提交
-      const { useBranchTagStore } = await import('./branchTagStore');
-      const branchTag = useBranchTagStore.getState().getTag(repoPath, repoInfo?.currentBranch || '');
-      // 主干分支保留合并记录，其他分支隐藏
-      const isMainline = branchTag === 'mainline';
-
       const entries = await invoke<LogEntry[]>('get_log', {
         repoPath,
         maxCount: maxCount ?? 100,
         branch: branch ?? null,
         baseRef: baseRef ?? null,
-        firstParent: false,  // 不用 --first-parent，保留 feature 分支的提交
-        noMerges: !isMainline,  // 主干分支保留合并记录，其他分支隐藏
+        firstParent: false,
+        noMerges: true,  // 所有分支都隐藏合并记录
       });
       if (reqId === _logRequestId) set({ logEntries: entries, logLoading: false });
     } catch (e) {

@@ -295,16 +295,27 @@ pub fn get_log(
         let branch_name = current_branch.stdout.trim();
 
         if !branch_name.is_empty() {
-            // feature/xxx 分支 → 只显示相对于 develop 的差异提交
-            if branch_name.starts_with("feature/") {
-                // 尝试 origin/develop，不存在则用 develop
-                let has_remote_develop = executor::execute(
-                    &repo_path, &["rev-parse", "--verify", "origin/develop"]
-                );
-                let base = if has_remote_develop.is_ok() && has_remote_develop.unwrap().is_success() {
-                    "origin/develop"
+            // feature/xxx, bugfix/xxx, release/xxx, hotfix/xxx 分支 → 只显示差异提交
+            if branch_name.starts_with("feature/") || branch_name.starts_with("bugfix/") || branch_name.starts_with("release/") || branch_name.starts_with("hotfix/") {
+                // 确定基准分支：hotfix 基于 main，其他基于 develop
+                let base = if branch_name.starts_with("hotfix/") {
+                    let has_remote_main = executor::execute(
+                        &repo_path, &["rev-parse", "--verify", "origin/main"]
+                    );
+                    if has_remote_main.is_ok() && has_remote_main.unwrap().is_success() {
+                        "origin/main"
+                    } else {
+                        "main"
+                    }
                 } else {
-                    "develop"
+                    let has_remote_develop = executor::execute(
+                        &repo_path, &["rev-parse", "--verify", "origin/develop"]
+                    );
+                    if has_remote_develop.is_ok() && has_remote_develop.unwrap().is_success() {
+                        "origin/develop"
+                    } else {
+                        "develop"
+                    }
                 };
                 remote_ref_str = format!("origin/{}", branch_name);
                 let check = executor::execute(&repo_path, &["rev-parse", "--verify", &remote_ref_str]);
@@ -317,7 +328,7 @@ pub fn get_log(
                     args.push(&range_str);
                 }
             } else {
-                // 非 feature 分支 → 显示远程跟踪分支（优先）或本地分支
+                // 其他分支（develop, main 等） → 显示远程跟踪分支（优先）或本地分支
                 remote_ref_str = format!("origin/{}", branch_name);
                 let check = executor::execute(&repo_path, &["rev-parse", "--verify", &remote_ref_str]);
                 if check.is_ok() && check.unwrap().is_success() {
@@ -368,12 +379,63 @@ pub fn get_log(
     Ok(entries)
 }
 
+/// 根据提交消息查找提交
 #[tauri::command]
-pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>) -> Result<String, String> {
+pub fn git_log_find_by_message(
+    repo_path: String,
+    branch: String,
+    message: String,
+    max_count: Option<usize>,
+) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_ref(&branch)?;
+    let count = max_count.unwrap_or(10).to_string();
+
+    let output = executor::execute(&repo_path, &[
+        "log",
+        &branch,
+        &format!("--grep={}", message),
+        "--format=%H%x00%s",
+        "--max-count",
+        &count,
+    ])?;
+
+    Ok(output.stdout)
+}
+
+/// 查找分支上最新的非合并提交（用于找到 squash 提交）
+#[tauri::command]
+pub fn git_find_latest_non_merge_commit(
+    repo_path: String,
+    branch: String,
+) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_ref(&branch)?;
+
+    let output = executor::execute(&repo_path, &[
+        "rev-list",
+        "--no-merges",
+        "--max-count=1",
+        &branch,
+    ])?;
+
+    Ok(output.stdout.trim().to_string())
+}
+
+#[tauri::command]
+pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>, strategy: Option<String>) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     validate_ref(&branch)?;
     let mut args: Vec<&str> = vec!["merge", &branch];
     if no_ff.unwrap_or(false) { args.push("--no-ff"); }
+    // 支持冲突解决策略：ours 或 theirs
+    if let Some(ref s) = strategy {
+        if s == "ours" || s == "theirs" {
+            args.push("-X");
+            args.push(s);
+        }
+    }
+    args.push("--no-edit");
     let output = executor::execute(&repo_path, &args)?;
     if output.exit_code != 0 {
         return Err(format!("{}\n{}", output.stdout, output.stderr));
@@ -923,4 +985,39 @@ pub fn get_commit_file_diff(
         return Err(output.error_message().unwrap_or("Unknown error").to_string());
     }
     Ok(output.stdout)
+}
+
+#[tauri::command]
+pub fn git_tag(repo_path: String, tag: String, message: String, target: Option<String>) -> Result<(), String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_ref(&tag)?;
+
+    let target_ref = target.as_deref().unwrap_or("HEAD");
+    let output = executor::execute(&repo_path, &["tag", "-a", &tag, "-m", &message, target_ref])?;
+    if !output.is_success() {
+        return Err(output.error_message().unwrap_or("Failed to create tag").to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_tag_list(repo_path: String) -> Result<String, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+
+    let output = executor::execute(&repo_path, &["tag", "-l"])?;
+    if !output.is_success() {
+        return Err(output.error_message().unwrap_or("Failed to list tags").to_string());
+    }
+    Ok(output.stdout)
+}
+
+#[tauri::command]
+pub async fn git_push_tags(repo_path: String) -> Result<(), String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+
+    let output = executor::execute(&repo_path, &["push", "origin", "--tags"])?;
+    if !output.is_success() {
+        return Err(output.error_message().unwrap_or("Failed to push tags").to_string());
+    }
+    Ok(())
 }

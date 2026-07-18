@@ -23,8 +23,14 @@ export interface PipelineStep {
 /** 任务状态 */
 export type TaskStatus = 'pending' | 'running' | 'paused' | 'success' | 'cancelled';
 
+/** 任务类型 */
+export type TaskType = 'feature' | 'version';
+
+/** 版本子类型 */
+export type VersionType = 'release' | 'hotfix';
+
 /** 流水线阶段 — 显式状态机，替代从步骤组合推断 */
-export type PipelinePhase =
+export type FeaturePhase =
   | 'pending'           // 未开始
   | 'developing'        // 开发中（分支已创建，等待用户操作）
   | 'syncing'           // 同步中（自动）
@@ -35,6 +41,19 @@ export type PipelinePhase =
   | 'cleaning_up'       // 清理中（自动）
   | 'finished'          // 完成
   | 'delete_only';      // 仅可删除（错误状态）
+
+export type VersionPhase =
+  | 'pending'           // 未开始
+  | 'developing'        // 开发中（分支已创建，等待用户操作）
+  | 'pushing'           // 推送中（自动）
+  | 'creating_mr'       // 创建 MR 中（自动，两个 MR 并行创建）
+  | 'waiting_merge'     // 等待合并（两个 MR 都创建完成）
+  | 'tagging'           // 打 Tag 中（自动，两个 MR 都合并后）
+  | 'cleaning_up'       // 清理中（自动）
+  | 'finished'          // 完成
+  | 'delete_only';      // 仅可删除（错误状态）
+
+export type PipelinePhase = FeaturePhase | VersionPhase;
 
 /** 同步策略 */
 export type SyncStrategy = 'rebase' | 'merge';
@@ -59,15 +78,22 @@ export type MrPollStatus = 'idle' | 'checking' | 'conflict' | 'pipeline_failed' 
 export interface PipelineTask {
   id: string;
   name: string;
+  taskType: TaskType;
+  versionType?: VersionType;
   branchName: string;
+  version?: string;
   status: TaskStatus;
-  phase: PipelinePhase;  // 显式阶段，按钮渲染直接读取
+  phase: PipelinePhase;
   steps: PipelineStep[];
   currentStep: number;
   syncStrategy: SyncStrategy;
   mrSettings: MRSettings;
   mrIid?: number;
   mrUrl?: string;
+  mrMainIid?: number;
+  mrMainUrl?: string;
+  mrDevIid?: number;
+  mrDevUrl?: string;
   mrPollStatus?: MrPollStatus;
   squashCommitMessage?: string;
   error?: string;
@@ -78,7 +104,10 @@ export interface PipelineTask {
 /** 创建任务参数 */
 export interface CreateTaskParams {
   name: string;
+  taskType: TaskType;
+  versionType?: VersionType;
   branchName?: string;
+  version?: string;
   syncStrategy?: SyncStrategy;
   mrSettings?: Partial<MRSettings>;
 }
@@ -99,6 +128,7 @@ interface PipelineState {
   syncRemote: (taskId: string) => Promise<void>;
   pushRemote: (taskId: string) => Promise<void>;
   createMR: (taskId: string, commitMessage?: string) => Promise<void>;
+  createVersionMR: (taskId: string, commitMessage?: string) => Promise<void>;
   checkMergeStatus: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string) => Promise<void>;
   switchRepo: (repoPath: string | null) => void;
@@ -114,7 +144,7 @@ interface PipelineState {
   clearError: () => void;
 }
 
-function createSteps(): PipelineStep[] {
+function createFeatureSteps(): PipelineStep[] {
   return [
     { key: 'branch', title: '创建分支', status: 'wait' },
     { key: 'develop', title: '开发修改', status: 'wait' },
@@ -125,6 +155,25 @@ function createSteps(): PipelineStep[] {
     { key: 'wait', title: '等待合并', status: 'wait' },
     { key: 'cleanup', title: '清理分支', status: 'wait' },
   ];
+}
+
+function createVersionSteps(versionType: VersionType): PipelineStep[] {
+  const developTitle = versionType === 'release' ? '版本准备' : '紧急修复';
+  return [
+    { key: 'branch', title: '创建分支', status: 'wait' },
+    { key: 'develop', title: developTitle, status: 'wait' },
+    { key: 'commit', title: '提交代码', status: 'wait' },
+    { key: 'push', title: '推送远程', status: 'wait' },
+    { key: 'mr', title: '创建MR', status: 'wait' },
+    { key: 'wait', title: '等待合并', status: 'wait' },
+    { key: 'tag', title: '标记版本', status: 'wait' },
+    { key: 'cleanup', title: '清理分支', status: 'wait' },
+  ];
+}
+
+function createSteps(taskType: TaskType, versionType?: VersionType): PipelineStep[] {
+  if (taskType === 'feature') return createFeatureSteps();
+  return createVersionSteps(versionType!);
 }
 
 function updateStep(task: PipelineTask, key: string, updates: Partial<PipelineStep>): PipelineTask {
@@ -213,6 +262,25 @@ function inferPhase(task: PipelineTask): PipelinePhase {
   if (task.status === 'success' || task.status === 'cancelled') return 'finished';
   if (task.status === 'pending') return 'pending';
 
+  // 版本任务
+  if (task.taskType === 'version') {
+    const push = task.steps.find(s => s.key === 'push');
+    const mr = task.steps.find(s => s.key === 'mr');
+    const wait = task.steps.find(s => s.key === 'wait');
+    const tag = task.steps.find(s => s.key === 'tag');
+    const cleanup = task.steps.find(s => s.key === 'cleanup');
+
+    if (cleanup?.status === 'process') return 'cleaning_up';
+    if (tag?.status === 'process') return 'tagging';
+    if (wait?.status === 'process') return 'waiting_merge';
+    if (mr?.status === 'process') return 'creating_mr';
+    if (push?.status === 'process') return 'pushing';
+    if (push?.status === 'error') return 'delete_only';
+    if (mr?.status === 'error') return 'delete_only';
+    return 'developing';
+  }
+
+  // Feature 任务（原有逻辑）
   const sync = task.steps.find(s => s.key === 'sync');
   const push = task.steps.find(s => s.key === 'push');
   const mr = task.steps.find(s => s.key === 'mr');
@@ -262,7 +330,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         for (const [repo, tasks] of Object.entries(saved)) {
           const mapped = tasks.map((t) => {
             // 向后兼容：为旧任务推断 phase
-            const withPhase = { ...t, phase: inferPhase(t) };
+            let withPhase = { ...t, phase: inferPhase(t) };
 
             // 检查是否有中断的清理任务
             const cleanupStep = t.steps.find((s) => s.key === 'cleanup');
@@ -271,8 +339,18 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
               return withPhase;
             }
 
+            // 处理中断的任务：重置所有 'process' 状态的步骤
             if (t.status === 'running') {
-              return { ...withPhase, status: 'paused' as TaskStatus, error: '程序重启，任务已暂停' };
+              const resetSteps = withPhase.steps.map((s) => {
+                if (s.status === 'process') {
+                  // 对于 develop 步骤，保持 process（等待用户操作）
+                  if (s.key === 'develop') return s;
+                  // 其他步骤重置为 wait 或 error
+                  return { ...s, status: 'wait' as StepStatus, error: undefined, description: undefined };
+                }
+                return s;
+              });
+              withPhase = { ...withPhase, steps: resetSteps, status: 'paused' as TaskStatus, error: '程序重启，任务已暂停' };
             }
             return withPhase;
           });
@@ -320,15 +398,20 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
 
     const id = `task_${Date.now()}_${++taskCounter}`;
+    const taskType = params.taskType || 'feature';
+    const versionType = params.versionType;
     const branchName = params.branchName || `feature/${params.name.toLowerCase().replace(/\s+/g, '-')}`;
 
     const task: PipelineTask = {
       id,
       name: params.name,
+      taskType,
+      versionType,
       branchName,
+      version: params.version,
       status: 'pending',
       phase: 'pending',
-      steps: createSteps(),
+      steps: createSteps(taskType, versionType),
       currentStep: -1,
       syncStrategy: params.syncStrategy || 'rebase',
       mrSettings: {
@@ -351,8 +434,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       return { tasksByRepo: newTasksByRepo, currentTask: task };
     });
 
-    // 给分支打上任务分支标签
-    useBranchTagStore.getState().setTag(repoPath, branchName, 'task');
+    // 根据任务类型给分支打上对应标签
+    const branchTag = taskType === 'version'
+      ? (versionType === 'release' ? 'release' : 'hotfix')
+      : 'task';
+    useBranchTagStore.getState().setTag(repoPath, branchName, branchTag);
 
     return task;
   },
@@ -368,18 +454,30 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     updateTask(currentTask);
 
     try {
-      // Step 1: 创建分支（基于远程开发分支）
+      // Step 1: 创建分支
       currentTask = updateStep(currentTask, 'branch', { status: 'process', startTime: Date.now() });
       updateTask(currentTask);
 
       // 先 fetch 确保有最新的远程分支
       await invoke('git_fetch', { repoPath });
 
+      // 版本任务从不同源分支切出
+      let sourceBranch = `origin/${task.mrSettings.targetBranch}`;
+      if (task.taskType === 'version' && task.versionType === 'release') {
+        // release 从 develop 切出
+        const branchTagStore = useBranchTagStore.getState();
+        const devBranch = repoPath ? branchTagStore.getTargetBranch(repoPath) : null;
+        sourceBranch = `origin/${devBranch || 'develop'}`;
+      } else if (task.taskType === 'version' && task.versionType === 'hotfix') {
+        // hotfix 从 main 切出
+        sourceBranch = `origin/${task.mrSettings.targetBranch}`;
+      }
+
       await invoke('git_checkout', {
         repoPath,
         target: task.branchName,
         createBranch: true,
-        startPoint: `origin/${task.mrSettings.targetBranch}`,  // 基于远程开发分支
+        startPoint: sourceBranch,
       });
 
       await useRepoStore.getState().refreshStatus();
@@ -390,8 +488,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       updateTask(currentTask);
 
       // Step 2: 开发修改 — 暂停等待用户操作
+      const developTitle = task.taskType === 'version'
+        ? (task.versionType === 'release' ? '请准备版本内容' : '请进行紧急修复')
+        : '请在工作区修改代码';
       currentTask = updateStep(currentTask, 'develop', {
-        status: 'process', description: '请在工作区修改代码，完成后点击"提交代码"',
+        status: 'process', description: `${developTitle}，完成后点击"提交代码"`,
       });
       currentTask = setTaskStatus(currentTask, 'paused');
       currentTask = { ...currentTask, phase: 'developing' };
@@ -580,7 +681,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'push', {
         status: 'finish', endTime: Date.now(), description: force ? '已强制推送' : '已推送',
       });
-      // 推送成功，进入开发阶段（用户可继续开发或创建 MR）
+
+      // 版本任务推送后进入开发阶段，用户确认后创建 MR
       currentTask = setTaskStatus(currentTask, 'paused');
       currentTask = { ...currentTask, phase: 'developing' };
       updateTask(currentTask);
@@ -613,6 +715,12 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!ctx || !ctx.task) return;
     if (ctx.task.status === 'running') return; // 防止并发执行
     const { repoPath, task } = ctx;
+
+    // 防止重复创建 MR
+    if (task.mrIid) {
+      message.warning('MR 已存在，请勿重复创建');
+      return;
+    }
 
     let currentTask = setTaskStatus(task, 'running');
     currentTask = { ...currentTask, phase: 'creating_mr' };
@@ -660,7 +768,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
               },
             );
 
-            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url, squashCommitMessage: commitMessage || undefined };
+            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url || undefined, squashCommitMessage: commitMessage || undefined };
             currentTask = updateStep(currentTask, 'mr', {
               status: 'finish', endTime: Date.now(), description: `MR !${mr.iid}`,
             });
@@ -706,6 +814,169 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
+  // 创建版本 MR（release/hotfix）- 并行创建 MR→main 和 MR→develop
+  createVersionMR: async (taskId: string, commitMessage?: string) => {
+    const ctx = getTask(taskId);
+    if (!ctx || !ctx.task) return;
+    if (ctx.task.status === 'running') return;
+    const { repoPath, task } = ctx;
+
+    // 防止重复创建 MR
+    if (task.mrMainIid || task.mrDevIid) {
+      message.warning('MR 已存在，请勿重复创建');
+      return;
+    }
+
+    let currentTask = setTaskStatus(task, 'running');
+    currentTask = { ...currentTask, phase: 'creating_mr' };
+    currentTask = updateStep(currentTask, 'mr', { status: 'process', startTime: Date.now() });
+    const updateTask = makeUpdateTask(repoPath, taskId, set);
+    updateTask(currentTask);
+
+    try {
+      const gitlabStore = useGitLabStore.getState();
+      let { service, currentProject } = gitlabStore;
+
+      // 如果没有选择项目，尝试自动选择
+      if (service && !currentProject) {
+        if (repoPath) {
+          const repoName = repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
+          try {
+            await gitlabStore.searchProjects(repoName);
+            const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
+            if (matched) {
+              gitlabStore.selectProject(matched);
+              currentProject = matched;
+            }
+          } catch (e) {
+            console.error('createVersionMR: auto search failed', e);
+          }
+        }
+      }
+
+      if (!service || !currentProject) {
+        message.error('未配置 GitLab');
+        currentTask = setTaskStatus(currentTask, 'paused', '未配置 GitLab');
+        currentTask = { ...currentTask, phase: 'developing' };
+        updateTask(currentTask);
+        return;
+      }
+
+      const mrTitle = `${task.versionType === 'release' ? 'Release' : 'Hotfix'}: ${task.version || task.name}`;
+      const branchTagStore = useBranchTagStore.getState();
+      const devBranch = branchTagStore.getTargetBranch(repoPath) || 'develop';
+
+      // Release 任务：先合并 main 到 release，避免 MR 冲突
+      if (task.versionType === 'release') {
+        try {
+          await invoke('git_fetch', { repoPath });
+          await invoke('git_merge', {
+            repoPath,
+            branch: `origin/${task.mrSettings.targetBranch}`,
+            strategy: 'ours',
+          });
+        } catch (mergeError) {
+          console.warn('合并 main 到 release 失败:', mergeError);
+          // 合并失败继续创建 MR，让用户手动解决
+        }
+      }
+
+      // 并行创建两个 MR
+      const [mrMainResult, mrDevResult] = await Promise.allSettled([
+        // MR→main
+        service.createMergeRequest(
+          currentProject.path_with_namespace,
+          {
+            source_branch: task.branchName,
+            target_branch: task.mrSettings.targetBranch, // main
+            title: mrTitle,
+            description: task.mrSettings.description || '',
+            remove_source_branch: false, // 不删除，等两个 MR 都合并
+            squash: task.mrSettings.squash,
+            squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
+          },
+        ),
+        // MR→develop
+        service.createMergeRequest(
+          currentProject.path_with_namespace,
+          {
+            source_branch: task.branchName,
+            target_branch: devBranch,
+            title: `${mrTitle} (merge to ${devBranch})`,
+            description: task.mrSettings.description || '',
+            remove_source_branch: false, // 不删除，等两个 MR 都合并
+            squash: task.mrSettings.squash,
+            squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
+          },
+        ),
+      ]);
+
+      // 处理 MR→main 结果
+      if (mrMainResult.status === 'fulfilled') {
+        const mrMain = mrMainResult.value;
+        currentTask = { ...currentTask, mrMainIid: mrMain.iid, mrMainUrl: mrMain.web_url || undefined };
+      } else {
+        console.error('createVersionMR: mr_main error', mrMainResult.reason);
+        message.error(`创建 MR→main 失败: ${mrMainResult.reason}`);
+      }
+
+      // 处理 MR→develop 结果
+      if (mrDevResult.status === 'fulfilled') {
+        const mrDev = mrDevResult.value;
+        currentTask = { ...currentTask, mrDevIid: mrDev.iid, mrDevUrl: mrDev.web_url || undefined, mrIid: mrDev.iid, mrUrl: mrDev.web_url || undefined };
+      } else {
+        console.error('createVersionMR: mr_dev error', mrDevResult.reason);
+        message.error(`创建 MR→develop 失败: ${mrDevResult.reason}`);
+      }
+
+      // 检查是否都创建成功
+      const mrMainSuccess = mrMainResult.status === 'fulfilled';
+      const mrDevSuccess = mrDevResult.status === 'fulfilled';
+
+      if (mrMainSuccess && mrDevSuccess) {
+        // 两个 MR 都创建成功
+        currentTask = {
+          ...currentTask,
+          squashCommitMessage: commitMessage || undefined,
+        };
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'finish', endTime: Date.now(),
+          description: `MR !${currentTask.mrMainIid} + MR !${currentTask.mrDevIid}`,
+        });
+        // 进入等待合并步骤
+        currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待两个 MR 合并' });
+        currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+        currentTask = { ...currentTask, phase: 'waiting_merge' };
+      } else if (mrMainSuccess || mrDevSuccess) {
+        // 只有一个成功
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'error', endTime: Date.now(),
+          error: '部分 MR 创建失败，请检查后重试',
+        });
+        currentTask = setTaskStatus(currentTask, 'paused', '部分 MR 创建失败');
+        currentTask = { ...currentTask, phase: 'developing' };
+      } else {
+        // 都失败
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'error', endTime: Date.now(),
+          error: 'MR 创建失败',
+        });
+        currentTask = setTaskStatus(currentTask, 'paused', 'MR 创建失败');
+        currentTask = { ...currentTask, phase: 'developing' };
+      }
+
+      updateTask(currentTask);
+
+    } catch (e) {
+      const errorMsg = String(e);
+      message.error(errorMsg);
+      currentTask = updateStep(currentTask, 'mr', { status: 'error', error: errorMsg, endTime: Date.now() });
+      currentTask = setTaskStatus(currentTask, 'paused');
+      currentTask = { ...currentTask, phase: 'developing' };
+      updateTask(currentTask);
+    }
+  },
+
   // 检查 MR 合并状态
   checkMergeStatus: async (taskId: string) => {
     const ctx = getTask(taskId);
@@ -736,22 +1007,44 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const { repoPath, task } = ctx;
 
     try {
-      // 1. 中止 rebase（如果正在进行）
-      const syncStep = task.steps.find((s) => s.key === 'sync');
-      if (syncStep?.status === 'error' || syncStep?.status === 'process') {
-        try {
-          await invoke('git_abort_rebase', { repoPath });
-        } catch (e) {
-          console.warn('操作失败（已忽略）:', e);
+      // 1. 中止 rebase（如果正在进行，仅 feature 任务）
+      if (task.taskType === 'feature') {
+        const syncStep = task.steps.find((s) => s.key === 'sync');
+        if (syncStep?.status === 'error' || syncStep?.status === 'process') {
+          try {
+            await invoke('git_abort_rebase', { repoPath });
+          } catch (e) {
+            console.warn('操作失败（已忽略）:', e);
+          }
         }
       }
 
       // 2. 关闭 MR（如果存在）
-      const mrStep = task.steps.find((s) => s.key === 'mr');
-      if (mrStep?.status === 'finish' && task.mrIid) {
-        const gitlabStore = useGitLabStore.getState();
-        const { service, currentProject } = gitlabStore;
-        if (service && currentProject) {
+      const gitlabStore = useGitLabStore.getState();
+      const { service, currentProject } = gitlabStore;
+
+      if (task.taskType === 'version') {
+        // 版本任务：关闭两个 MR
+        const mrMainStep = task.steps.find((s) => s.key === 'mr_main');
+        if (mrMainStep?.status === 'finish' && task.mrMainIid && service && currentProject) {
+          try {
+            await service.closeMergeRequest(currentProject.path_with_namespace, task.mrMainIid);
+          } catch {
+            // MR 可能已经关闭，忽略
+          }
+        }
+        const mrDevStep = task.steps.find((s) => s.key === 'mr_dev');
+        if (mrDevStep?.status === 'finish' && task.mrDevIid && service && currentProject) {
+          try {
+            await service.closeMergeRequest(currentProject.path_with_namespace, task.mrDevIid);
+          } catch {
+            // MR 可能已经关闭，忽略
+          }
+        }
+      } else {
+        // Feature 任务：关闭一个 MR
+        const mrStep = task.steps.find((s) => s.key === 'mr');
+        if (mrStep?.status === 'finish' && task.mrIid && service && currentProject) {
           try {
             await service.closeMergeRequest(currentProject.path_with_namespace, task.mrIid);
           } catch {
@@ -760,11 +1053,14 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         }
       }
 
-      // 3. 切回目标分支
+      // 3. 切回目标分支（版本任务切回 develop，feature 切回目标分支）
       try {
+        const checkoutTarget = task.taskType === 'version'
+          ? (useBranchTagStore.getState().getTargetBranch(repoPath) || 'develop')
+          : task.mrSettings.targetBranch;
         await invoke('git_checkout', {
           repoPath,
-          target: task.mrSettings.targetBranch,
+          target: checkoutTarget,
           createBranch: false,
           startPoint: null,
         });
@@ -954,13 +1250,27 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!ctx || !ctx.task) return;
     const { repoPath, task } = ctx;
 
-    let updated = updateStep(task, 'develop', { status: 'process', description: '请在工作区修改代码，完成后点击"提交代码"' });
+    const developTitle = task.taskType === 'version'
+      ? (task.versionType === 'release' ? '请准备版本内容' : '请进行紧急修复')
+      : '请在工作区修改代码';
+
+    let updated = updateStep(task, 'develop', { status: 'process', description: `${developTitle}，完成后点击"提交代码"` });
     updated = updateStep(updated, 'commit', { status: 'wait', error: undefined, description: undefined });
-    updated = updateStep(updated, 'sync', { status: 'wait', error: undefined, description: undefined });
     updated = updateStep(updated, 'push', { status: 'wait', error: undefined, description: undefined });
-    updated = updateStep(updated, 'mr', { status: 'wait', error: undefined, description: undefined });
-    updated = updateStep(updated, 'wait', { status: 'wait', error: undefined, description: undefined });
-    updated = { ...updated, mrPollStatus: undefined, mrIid: undefined, mrUrl: undefined };
+
+    if (task.taskType === 'feature') {
+      // Feature 任务：重置 sync 和 mr 步骤
+      updated = updateStep(updated, 'sync', { status: 'wait', error: undefined, description: undefined });
+      updated = updateStep(updated, 'mr', { status: 'wait', error: undefined, description: undefined });
+      updated = { ...updated, mrPollStatus: undefined };
+    } else {
+      // 版本任务：重置 mr、wait、tag 步骤
+      updated = updateStep(updated, 'mr', { status: 'wait', error: undefined, description: undefined });
+      updated = updateStep(updated, 'wait', { status: 'wait', error: undefined, description: undefined });
+      updated = updateStep(updated, 'tag', { status: 'wait', error: undefined, description: undefined });
+      updated = { ...updated, mrPollStatus: undefined };
+    }
+
     updated = setTaskStatus(updated, 'paused');
     updated = { ...updated, phase: 'developing' };
 
@@ -1065,7 +1375,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
     const { repoPath, task } = ctx;
-    if (!task.mrIid) return;
+    // 版本任务轮询 MR→develop，feature 任务轮询 MR
+    const mrIid = task.taskType === 'version' ? task.mrDevIid : task.mrIid;
+    if (!mrIid) return;
 
     const gitlabStore = useGitLabStore.getState();
     let { service, currentProject } = gitlabStore;
@@ -1089,7 +1401,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!currentProject) return;
 
     try {
-      const mr = await service.getMergeRequest(currentProject.path_with_namespace, task.mrIid);
+      const mr = await service.getMergeRequest(currentProject.path_with_namespace, mrIid);
 
       let newStatus: MrPollStatus = 'idle';
 
@@ -1106,15 +1418,37 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }
 
       // 自动合并：MR 可合并且开启了自动合并
-      if (newStatus === 'mergeable' && task.mrSettings.autoMerge && task.mrIid) {
+      if (newStatus === 'mergeable' && task.mrSettings.autoMerge && mrIid) {
         try {
           const squashCommitMsg = task.mrSettings.squash ? (task.squashCommitMessage || undefined) : undefined;
+
+          // 版本任务：先尝试合并 MR→main（如果还没合并）
+          if (task.taskType === 'version' && task.mrMainIid) {
+            try {
+              const mrMain = await service.getMergeRequest(currentProject.path_with_namespace, task.mrMainIid);
+              if (mrMain.state !== 'merged' && mrMain.detailed_merge_status === 'mergeable') {
+                await service.mergeMergeRequest(
+                  currentProject.path_with_namespace,
+                  task.mrMainIid,
+                  {
+                    squash: task.mrSettings.squash,
+                    should_remove_source_branch: false,
+                    squash_commit_message: squashCommitMsg,
+                  },
+                );
+              }
+            } catch (e) {
+              console.warn('[pollMrStatus] 自动合并 MR→main 失败:', e);
+            }
+          }
+
+          // 合并当前 MR（MR→develop）
           await service.mergeMergeRequest(
             currentProject.path_with_namespace,
-            task.mrIid,
+            mrIid,
             {
               squash: task.mrSettings.squash,
-              should_remove_source_branch: task.mrSettings.deleteBranchAfterMerge,
+              should_remove_source_branch: task.taskType === 'version' ? false : task.mrSettings.deleteBranchAfterMerge,
               squash_commit_message: squashCommitMsg,
             },
           );
@@ -1133,9 +1467,50 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       // 只在状态变化时更新，或者需要执行清理时
       if (task.mrPollStatus !== newStatus || needCleanup) {
-        // 如果 MR 已合并且需要清理，执行清理
+        // 如果 MR 已合并且需要清理
         if (needCleanup) {
-          await executeCleanup(task, taskId, repoPath);
+          // 版本任务需要检查 MR→main 也已合并
+          if (task.taskType === 'version' && task.mrMainIid) {
+            try {
+              const mrMain = await service.getMergeRequest(currentProject.path_with_namespace, task.mrMainIid);
+              if (mrMain.state !== 'merged') {
+                // MR→main 还没合并，检查具体状态
+                let mainMrStatus: MrPollStatus = 'idle';
+                if (mrMain.state === 'closed') {
+                  mainMrStatus = 'closed';
+                } else {
+                  const detailed = mrMain.detailed_merge_status || '';
+                  if (detailed === 'conflict') mainMrStatus = 'conflict';
+                  else if (detailed === 'ci_must_pass' || detailed === 'not_mergeable') mainMrStatus = 'pipeline_failed';
+                  else if (detailed === 'not_approved') mainMrStatus = 'not_approved';
+                  else if (detailed === 'mergeable') mainMrStatus = 'mergeable';
+                }
+
+                // 更新状态，显示 MR→main 的实际状态
+                const updatedTask: PipelineTask = {
+                  ...task,
+                  mrPollStatus: mainMrStatus,
+                  updatedAt: Date.now(),
+                };
+                set((state) => {
+                  const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) =>
+                    t.id === taskId ? updatedTask : t
+                  );
+                  const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
+                  persistTasks(newTasksByRepo);
+                  return {
+                    tasksByRepo: newTasksByRepo,
+                    currentTask: state.currentTask?.id === taskId ? updatedTask : state.currentTask,
+                  };
+                });
+                return;
+              }
+            } catch (e) {
+              console.warn('[pollMrStatus] 检查 MR→main 状态失败:', e);
+            }
+          }
+          // 两个 MR 都合并，先打 Tag 再清理
+          await executeTagAndCleanup(task, taskId, repoPath);
           return;
         }
 
@@ -1220,7 +1595,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
     const { repoPath, task } = ctx;
-    if (!task.mrIid) return;
 
     const gitlabStore = useGitLabStore.getState();
     const { service, currentProject } = gitlabStore;
@@ -1231,7 +1605,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
 
     try {
-      await service.closeMergeRequest(currentProject.path_with_namespace, task.mrIid);
+      // 版本任务关闭两个 MR
+      if (task.taskType === 'version') {
+        const closePromises = [];
+        if (task.mrMainIid) {
+          closePromises.push(service.closeMergeRequest(currentProject.path_with_namespace, task.mrMainIid));
+        }
+        if (task.mrDevIid) {
+          closePromises.push(service.closeMergeRequest(currentProject.path_with_namespace, task.mrDevIid));
+        }
+        await Promise.allSettled(closePromises);
+      } else {
+        // Feature 任务关闭一个 MR
+        if (!task.mrIid) return;
+        await service.closeMergeRequest(currentProject.path_with_namespace, task.mrIid);
+      }
 
       let currentTask = updateStep(task, 'wait', {
         status: 'process', description: 'MR 已关闭',
@@ -1259,7 +1647,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const ctx = getTask(taskId);
     if (!ctx || !ctx.task) return;
     const { repoPath, task } = ctx;
-    if (!task.mrIid) return;
 
     const gitlabStore = useGitLabStore.getState();
     const { service, currentProject } = gitlabStore;
@@ -1270,7 +1657,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
 
     try {
-      await service.reopenMergeRequest(currentProject.path_with_namespace, task.mrIid);
+      // 版本任务重新打开两个 MR
+      if (task.taskType === 'version') {
+        const reopenPromises = [];
+        if (task.mrMainIid) {
+          reopenPromises.push(service.reopenMergeRequest(currentProject.path_with_namespace, task.mrMainIid));
+        }
+        if (task.mrDevIid) {
+          reopenPromises.push(service.reopenMergeRequest(currentProject.path_with_namespace, task.mrDevIid));
+        }
+        await Promise.allSettled(reopenPromises);
+      } else {
+        // Feature 任务重新打开一个 MR
+        if (!task.mrIid) return;
+        await service.reopenMergeRequest(currentProject.path_with_namespace, task.mrIid);
+      }
 
       let currentTask = updateStep(task, 'wait', {
         status: 'process', error: undefined, description: '等待 MR 合并',
@@ -1297,17 +1698,113 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   clearError: () => set({ error: null }),
 }));
 
+// 辅助函数：执行打 Tag + 清理步骤
+async function executeTagAndCleanup(
+  currentTask: PipelineTask,
+  taskId: string,
+  repoPath: string,
+) {
+  // 先打 Tag
+  let task = currentTask;
+  if (task.version) {
+    // 先将 wait 步骤标记为完成
+    task = updateStep(task, 'wait', {
+      status: 'finish', endTime: Date.now(), description: '已合并',
+    });
+    task = updateStep(task, 'tag', {
+      status: 'process', startTime: Date.now(), description: '正在打 Tag...',
+    });
+    task = setTaskStatus(task, 'running');
+    task = { ...task, phase: 'tagging' as PipelinePhase };
+    updateTaskInStore(task, taskId, repoPath);
+
+    try {
+      // 1. Fetch 最新远程
+      await invoke('git_fetch', { repoPath });
+
+      // 2. 查找主干分支上最新的非合并提交（squash 提交）
+      const mainBranch = task.mrSettings.targetBranch;
+      let tagTarget = `origin/${mainBranch}`;
+      try {
+        const logEntries = await invoke<{hash: string}[]>('get_log', {
+          repoPath,
+          maxCount: 5,
+          branch: `origin/${mainBranch}`,
+          baseRef: null,
+          firstParent: false,
+          noMerges: true,
+        });
+        if (logEntries && logEntries.length > 0 && logEntries[0].hash) {
+          tagTarget = logEntries[0].hash;
+        }
+      } catch (e) {
+        console.warn('查找 squash 提交失败，使用主干分支:', e);
+      }
+
+      // 3. 创建 tag（已存在也当作成功）
+      try {
+        await invoke('git_tag', { repoPath, tag: task.version, message: task.version, target: tagTarget });
+      } catch (e) {
+        if (String(e).includes('already exists')) {
+          console.log(`Tag ${task.version} 已存在，跳过创建`);
+        } else {
+          throw e;
+        }
+      }
+
+      // 4. 推送 tag（失败不阻塞）
+      try {
+        await invoke('git_push_tags', { repoPath });
+      } catch (e) {
+        console.warn('推送 tag 失败:', e);
+      }
+
+      // 5. 标记成功
+      task = updateStep(task, 'tag', {
+        status: 'finish', endTime: Date.now(), description: task.version,
+      });
+      updateTaskInStore(task, taskId, repoPath);
+
+    } catch (tagError) {
+      console.error('打 Tag 失败:', tagError);
+      task = updateStep(task, 'tag', {
+        status: 'error', error: String(tagError), endTime: Date.now(),
+      });
+      updateTaskInStore(task, taskId, repoPath);
+    }
+
+    // 切回开发分支
+    try {
+      const branchTagStore = useBranchTagStore.getState();
+      const devBranch = branchTagStore.getTargetBranch(repoPath) || 'develop';
+      await invoke('git_checkout', {
+        repoPath,
+        target: devBranch,
+        createBranch: false,
+        startPoint: null,
+      });
+    } catch (e) {
+      console.warn('切回开发分支失败:', e);
+    }
+  } else {
+    // 没有版本号，跳过 Tag
+    task = updateStep(task, 'tag', {
+      status: 'skip', description: '无版本号',
+    });
+  }
+
+  // 执行清理（使用更新后的 task，保留 tag 步骤的状态）
+  await executeCleanup(task, taskId, repoPath);
+}
+
 // 辅助函数：执行清理步骤
 async function executeCleanup(
   currentTask: PipelineTask,
   taskId: string,
   repoPath: string,
 ) {
-  // 标记为正在清理，并更新 mrPollStatus
-  let task = updateStep(currentTask, 'wait', {
-    status: 'finish', endTime: Date.now(), description: '已合并',
-  });
-  task = updateStep(task, 'cleanup', {
+  // 直接开始清理，wait 步骤已经在之前标记为完成
+  let task = updateStep(currentTask, 'cleanup', {
     status: 'process', startTime: Date.now(), description: '正在清理分支...',
   });
   task = setTaskStatus(task, 'running');
@@ -1317,9 +1814,13 @@ async function executeCleanup(
 
   try {
     // 1. 确保在目标分支上（先切换，避免删除当前分支失败）
+    // 版本任务切回 develop，feature 任务切回目标分支
+    const cleanupTarget = task.taskType === 'version'
+      ? (useBranchTagStore.getState().getTargetBranch(repoPath) || 'develop')
+      : task.mrSettings.targetBranch;
     await invoke('git_checkout', {
       repoPath,
-      target: task.mrSettings.targetBranch,
+      target: cleanupTarget,
       createBranch: false,
       startPoint: null,
     });
@@ -1332,22 +1833,24 @@ async function executeCleanup(
       console.warn('删除本地分支失败（可能已删除）:', e);
     }
 
-    // 3. 轮询检查远程分支是否已删除（GitLab 异步删除，最多等待 3 次）
+    // 3. 删除远程分支
     let remoteDeleted = false;
-    const remoteBranch = `remotes/origin/${task.branchName}`;
-    for (let i = 0; i < 3; i++) {
+    try {
+      await invoke('git_push', {
+        repoPath,
+        remote: 'origin',
+        delete: true,
+        branch: task.branchName,
+      });
+      remoteDeleted = true;
+    } catch (e) {
+      console.warn('删除远程分支失败（可能已删除）:', e);
+      // 检查远程分支是否已不存在
       try {
         const branchOutput = await invoke<string>('git_branch_list', { repoPath });
-        if (!branchOutput.includes(remoteBranch)) {
-          remoteDeleted = true;
-          break;
-        }
+        remoteDeleted = !branchOutput.includes(`remotes/origin/${task.branchName}`);
       } catch {
-        // 检查失败，继续尝试
-      }
-      if (i < 2) {
-        // 等待 500ms 再检查（最后一次不等待）
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // 忽略
       }
     }
 
@@ -1409,15 +1912,71 @@ async function checkMRAndCleanup(
   repoPath: string,
   task: PipelineTask,
 ) {
-  if (!task.mrIid) return;
-
   const gitlabStore = useGitLabStore.getState();
   const { service, currentProject } = gitlabStore;
 
   if (!service || !currentProject) return;
 
+  // 版本任务需要检查两个 MR 都合并
+  if (task.taskType === 'version') {
+    const mrMainIid = task.mrMainIid;
+    const mrDevIid = task.mrDevIid;
+
+    if (!mrDevIid) return;
+
+    try {
+      // 先检查 MR→main
+      if (mrMainIid) {
+        const mrMain = await service.getMergeRequest(currentProject.path_with_namespace, mrMainIid);
+        if (mrMain.state !== 'merged') {
+          // MR→main 还没合并，更新状态提示
+          const updated = updateStep(currentTask, 'wait', {
+            status: 'process', description: `等待 MR→main 合并 (!${mrMainIid})`,
+          });
+          updateTask(updated);
+          return;
+        }
+        // MR→main 已合并，更新步骤状态
+        currentTask = updateStep(currentTask, 'mr_main', {
+          status: 'finish', endTime: Date.now(), description: `MR !${mrMainIid} 已合并`,
+        });
+      }
+
+      // 再检查 MR→develop
+      const mrDev = await service.getMergeRequest(currentProject.path_with_namespace, mrDevIid);
+
+      if (mrDev.state === 'merged') {
+        // 两个 MR 都合并，先打 Tag 再清理
+        let updated = updateStep(currentTask, 'wait', {
+          status: 'finish', endTime: Date.now(), description: '已合并',
+        });
+        updateTask(updated);
+        await executeTagAndCleanup(updated, taskId, repoPath);
+      } else if (mrDev.state === 'closed') {
+        let updated = updateStep(currentTask, 'wait', {
+          status: 'error', error: 'MR→develop 已关闭', endTime: Date.now(),
+        });
+        updated = setTaskStatus(updated, 'paused', 'MR→develop 已关闭');
+        updateTask(updated);
+      } else {
+        // MR→develop 还没合并，更新状态提示
+        const updated = updateStep(currentTask, 'wait', {
+          status: 'process', description: `等待 MR→develop 合并 (!${mrDevIid})`,
+        });
+        updateTask(updated);
+      }
+    } catch (e) {
+      console.error('检查 MR 状态失败:', e);
+    }
+    return;
+  }
+
+  // Feature 任务：检查单个 MR
+  const mrIid = task.mrIid;
+  if (!mrIid) return;
+
   try {
-    const mr = await service.getMergeRequest(currentProject.path_with_namespace, task.mrIid);
+    const mr = await service.getMergeRequest(currentProject.path_with_namespace, mrIid);
 
     if (mr.state === 'merged') {
       let updated = updateStep(currentTask, 'wait', {

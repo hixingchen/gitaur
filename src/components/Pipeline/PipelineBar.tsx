@@ -7,7 +7,7 @@ import {
   ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined,
   BranchesOutlined, CodeOutlined, CloudUploadOutlined,
   PullRequestOutlined, RocketOutlined, ClearOutlined,
-  EditOutlined, SyncOutlined,
+  EditOutlined, SyncOutlined, TagOutlined,
 } from '@ant-design/icons';
 import { usePipelineStore, type PipelineTask, type TaskStatus, type StepStatus, type PipelinePhase } from '../../stores/pipelineStore';
 import { useRepoStore } from '../../stores/repoStore';
@@ -43,6 +43,7 @@ function getStepIcon(key: string) {
     case 'sync': return <ReloadOutlined />;
     case 'push': return <CloudUploadOutlined />;
     case 'mr': return <PullRequestOutlined />;
+    case 'tag': return <TagOutlined />;
     case 'wait': return <PauseCircleOutlined />;
     case 'cleanup': return <ClearOutlined />;
     default: return null;
@@ -55,11 +56,13 @@ interface PipelineBarProps {
 
 export function PipelineBar({ task }: PipelineBarProps) {
   const { token } = theme.useToken();
+  const repoPath = useRepoStore((s) => s.repoPath);
   const startTask = usePipelineStore((s) => s.startTask);
   const commitCode = usePipelineStore((s) => s.commitCode);
   const syncRemote = usePipelineStore((s) => s.syncRemote);
   const pushRemote = usePipelineStore((s) => s.pushRemote);
   const createMR = usePipelineStore((s) => s.createMR);
+  const createVersionMR = usePipelineStore((s) => s.createVersionMR);
   const deleteTask = usePipelineStore((s) => s.deleteTask);
   const closeMR = usePipelineStore((s) => s.closeMR);
   const reopenMR = usePipelineStore((s) => s.reopenMR);
@@ -81,8 +84,20 @@ export function PipelineBar({ task }: PipelineBarProps) {
   // 获取提交历史并生成默认的提交消息
   const getDefaultCommitMessage = useCallback(async () => {
     try {
-      // 用 baseRef 只加载任务分支独有的提交（排除目标分支的提交）
-      const baseRef = `origin/${task.mrSettings.targetBranch}`;
+      // 用 baseRef 只加载任务分支独有的提交（排除源分支的提交）
+      // 版本任务：release 从 develop 切出，hotfix 从 main 切出
+      // feature 任务：从 targetBranch 切出
+      let baseRef: string;
+      if (task.taskType === 'version' && task.versionType === 'release') {
+        // release 分支从 develop 切出，baseRef 应该是 develop
+        const { useBranchTagStore } = await import('../../stores/branchTagStore');
+        const branchTagStore = useBranchTagStore.getState();
+        const devBranch = branchTagStore.getTargetBranch(repoPath || '');
+        baseRef = `origin/${devBranch || 'develop'}`;
+      } else {
+        // hotfix 从 main 切出，feature 从 targetBranch 切出
+        baseRef = `origin/${task.mrSettings.targetBranch}`;
+      }
       await loadLog(50, task.branchName, baseRef);
 
       // 等待一下让 logEntries 更新
@@ -106,7 +121,7 @@ export function PipelineBar({ task }: PipelineBarProps) {
       console.warn('获取提交历史失败:', error);
       return '';
     }
-  }, [loadLog, task.branchName, task.mrSettings.squash, task.mrSettings.targetBranch]);
+  }, [loadLog, repoPath, task.branchName, task.taskType, task.versionType, task.mrSettings.squash, task.mrSettings.targetBranch]);
 
   // 打开创建 MR 弹窗（自动合并时需要填消息，否则直接创建）
   const handleOpenCreateMRModal = useCallback(async () => {
@@ -118,6 +133,13 @@ export function PipelineBar({ task }: PipelineBarProps) {
       createMR(task.id);
     }
   }, [getDefaultCommitMessage, task.mrSettings.autoMerge, task.id, createMR]);
+
+  // 打开创建版本 MR 弹窗（预填提交消息）
+  const handleOpenCreateVersionMRModal = useCallback(async () => {
+    const defaultMessage = await getDefaultCommitMessage();
+    setMrCommitMessage(defaultMessage);
+    setCreateMRModalOpen(true);
+  }, [getDefaultCommitMessage]);
 
   const currentStepIndex = task.currentStep >= 0 ? task.currentStep : 0;
   const phase: PipelinePhase = task.phase || 'developing';
@@ -159,8 +181,38 @@ export function PipelineBar({ task }: PipelineBarProps) {
         const pushError = pushStep?.status === 'error';
         const mrError = mrStep?.status === 'error';
 
+        const isVersion = task.taskType === 'version';
+
         // 推送已完成 → 主操作是创建MR，可回退继续开发
         if (pushDone) {
+          // 如果 MR 已存在（mrIid 或 mrMainIid），说明已经创建过，不显示创建按钮
+          const mrExists = task.mrIid || task.mrMainIid;
+          if (mrExists) {
+            return (
+              <Space size={6}>
+                <Tag color="processing">⏳ 等待合并</Tag>
+                <Button icon={<EditOutlined />} size="small"
+                  onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+                <DeleteBtn />
+              </Space>
+            );
+          }
+
+          if (isVersion) {
+            // 版本任务：创建版本 MR（并行创建 MR→main 和 MR→develop）
+            return (
+              <Space size={6}>
+                <Button type="primary" icon={<RocketOutlined />} size="small"
+                  onClick={handleOpenCreateVersionMRModal} loading={loading}>
+                  {mrError ? '重试创建版本MR' : '创建版本MR'}
+                </Button>
+                <Button icon={<EditOutlined />} size="small"
+                  onClick={() => resumeDevelopment(task.id)}>继续开发</Button>
+                <DeleteBtn />
+              </Space>
+            );
+          }
+          // Feature 任务：创建 MR
           return (
             <Space size={6}>
               <Button type="primary" icon={<PullRequestOutlined />} size="small"
@@ -174,8 +226,17 @@ export function PipelineBar({ task }: PipelineBarProps) {
           );
         }
 
-        // 推送失败 → 显示重试推送 + 同步
+        // 推送失败 → 显示重试推送（版本任务不同步远程）
         if (pushError) {
+          if (isVersion) {
+            return (
+              <Space size={6}>
+                <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+                  onClick={() => pushRemote(task.id)} loading={loading}>重试推送</Button>
+                <DeleteBtn />
+              </Space>
+            );
+          }
           return (
             <Space size={6}>
               <Button type="primary" icon={<CloudUploadOutlined />} size="small"
@@ -187,8 +248,8 @@ export function PipelineBar({ task }: PipelineBarProps) {
           );
         }
 
-        // 同步已完成 → 主操作是推送，可回退继续开发
-        if (syncDone) {
+        // 同步已完成（仅 feature）→ 主操作是推送
+        if (syncDone && !isVersion) {
           return (
             <Space size={6}>
               <Button type="primary" icon={<CloudUploadOutlined />} size="small"
@@ -200,8 +261,19 @@ export function PipelineBar({ task }: PipelineBarProps) {
           );
         }
 
-        // 提交已完成 → 主操作是同步
+        // 提交已完成 → 主操作是同步（feature）或推送（版本）
         if (commitDone) {
+          if (isVersion) {
+            return (
+              <Space size={6}>
+                <Button type="primary" icon={<CloudUploadOutlined />} size="small"
+                  onClick={() => pushRemote(task.id)} loading={loading}>推送到远程</Button>
+                <Button icon={<EditOutlined />} size="small"
+                  onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+                <DeleteBtn />
+              </Space>
+            );
+          }
           return (
             <Space size={6}>
               <Button type="primary" icon={<ReloadOutlined />} size="small"
@@ -213,7 +285,16 @@ export function PipelineBar({ task }: PipelineBarProps) {
           );
         }
 
-        // 未提交 → 主操作是提交代码，可跳过直接同步
+        // 未提交 → 主操作是提交代码
+        if (isVersion) {
+          return (
+            <Space size={6}>
+              <Button type="primary" icon={<EditOutlined />} size="small"
+                onClick={() => setCommitModalOpen(true)}>提交代码</Button>
+              <DeleteBtn />
+            </Space>
+          );
+        }
         return (
           <Space size={6}>
             <Button type="primary" icon={<EditOutlined />} size="small"
@@ -286,6 +367,19 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const renderWaitingMergeActions = () => {
     switch (mrPoll) {
       case 'conflict':
+        // 版本任务冲突在 MR→main，需要在 GitLab 上解决
+        if (task.taskType === 'version' && task.mrMainUrl) {
+          return (
+            <Space size={6}>
+              <Tag color="error">⚠️ MR→main 冲突</Tag>
+              <a href={task.mrMainUrl} target="_blank" rel="noopener noreferrer">
+                <Button type="primary" icon={<PullRequestOutlined />} size="small">在 GitLab 解决冲突</Button>
+              </a>
+              <DeleteBtn />
+            </Space>
+          );
+        }
+        // Feature 任务冲突，同步远程
         return (
           <Space size={6}>
             <Tag color="error">⚠️ 冲突</Tag>
@@ -337,10 +431,25 @@ export function PipelineBar({ task }: PipelineBarProps) {
         return (
           <Space size={6}>
             <Tag color="processing">🟢 可合并</Tag>
-            {task.mrUrl && (
-              <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
-                <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
-              </a>
+            {task.taskType === 'version' ? (
+              <>
+                {task.mrMainUrl && (
+                  <a href={task.mrMainUrl} target="_blank" rel="noopener noreferrer">
+                    <Button icon={<PullRequestOutlined />} size="small">MR→main</Button>
+                  </a>
+                )}
+                {task.mrDevUrl && (
+                  <a href={task.mrDevUrl} target="_blank" rel="noopener noreferrer">
+                    <Button icon={<PullRequestOutlined />} size="small">MR→develop</Button>
+                  </a>
+                )}
+              </>
+            ) : (
+              task.mrUrl && (
+                <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
+                  <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
+                </a>
+              )
             )}
             <Button danger icon={<CloseCircleOutlined />} size="small"
               onClick={() => void setCloseMRConfirm(true)}>关闭MR</Button>
@@ -352,10 +461,25 @@ export function PipelineBar({ task }: PipelineBarProps) {
         return (
           <Space size={6}>
             <Tag color="processing">⏳ 等待合并</Tag>
-            {task.mrUrl && (
-              <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
-                <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
-              </a>
+            {task.taskType === 'version' ? (
+              <>
+                {task.mrMainUrl && (
+                  <a href={task.mrMainUrl} target="_blank" rel="noopener noreferrer">
+                    <Button icon={<PullRequestOutlined />} size="small">MR→main</Button>
+                  </a>
+                )}
+                {task.mrDevUrl && (
+                  <a href={task.mrDevUrl} target="_blank" rel="noopener noreferrer">
+                    <Button icon={<PullRequestOutlined />} size="small">MR→develop</Button>
+                  </a>
+                )}
+              </>
+            ) : (
+              task.mrUrl && (
+                <a href={task.mrUrl} target="_blank" rel="noopener noreferrer">
+                  <Button icon={<PullRequestOutlined />} size="small">查看MR</Button>
+                </a>
+              )
             )}
             <Button danger icon={<CloseCircleOutlined />} size="small"
               onClick={() => void setCloseMRConfirm(true)}>关闭MR</Button>
@@ -475,12 +599,16 @@ export function PipelineBar({ task }: PipelineBarProps) {
       </Modal>
 
       <Modal
-        title="创建 MR"
+        title={task.taskType === 'version' ? '创建版本 MR' : '创建 MR'}
         open={createMRModalOpen}
         onOk={() => {
           setCreateMRModalOpen(false);
           setMrCommitMessage('');
-          createMR(task.id, mrCommitMessage.trim() || undefined);
+          if (task.taskType === 'version') {
+            createVersionMR(task.id, mrCommitMessage.trim() || undefined);
+          } else {
+            createMR(task.id, mrCommitMessage.trim() || undefined);
+          }
         }}
         onCancel={() => {
           setCreateMRModalOpen(false);
@@ -492,7 +620,9 @@ export function PipelineBar({ task }: PipelineBarProps) {
       >
         <div style={{ marginBottom: 8 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {task.mrSettings.squash ? '压缩提交消息（可选）' : '合并提交消息（可选）'}
+            {task.taskType === 'version'
+              ? '将并行创建 MR→main 和 MR→develop，合并后标记版本'
+              : (task.mrSettings.squash ? '压缩提交消息（可选）' : '合并提交消息（可选）')}
           </Text>
         </div>
         <Input.TextArea

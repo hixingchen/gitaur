@@ -4,7 +4,6 @@ import {
 } from 'antd';
 import {
   PlusOutlined, SwapOutlined, BranchesOutlined,
-  PullRequestOutlined,
 } from '@ant-design/icons';
 import { usePipelineStore } from '../../stores/pipelineStore';
 import { useRepoStore } from '../../stores/repoStore';
@@ -85,14 +84,24 @@ export function PipelinePanel() {
 
   const commitStep = currentTask?.steps.find((s) => s.key === 'commit');
   const syncStep = currentTask?.steps.find((s) => s.key === 'sync');
+  const pushStep = currentTask?.steps.find((s) => s.key === 'push');
   const waitStep = currentTask?.steps.find((s) => s.key === 'wait');
+  const isVersion = currentTask?.taskType === 'version';
+
+  // 判断是否显示文件树（开发阶段）
   const showFileTree = currentTask && (
+    // 提交未完成
     (commitStep && commitStep.status !== 'finish') ||
-    (commitStep?.status === 'finish' && syncStep?.status === 'wait') ||
-    (syncStep?.status === 'error' && (
+    // feature: 提交完成但同步未完成
+    (!isVersion && commitStep?.status === 'finish' && syncStep?.status === 'wait') ||
+    // feature: 同步错误（冲突/未提交）
+    (!isVersion && syncStep?.status === 'error' && (
       (syncStep.error || '').includes('冲突') ||
       (syncStep.error || '').includes('未提交的更改')
     )) ||
+    // 版本任务: 提交完成但推送未完成
+    (isVersion && commitStep?.status === 'finish' && pushStep?.status === 'wait') ||
+    // 等待合并时有冲突
     (waitStep?.status === 'process' && currentTask.mrPollStatus === 'conflict')
   );
   const isSuccess = currentTask?.status === 'success';
@@ -278,19 +287,7 @@ export function PipelinePanel() {
           borderRadius: 10,
           border: `1px solid ${token.colorBorderSecondary}`,
         }}>
-          {currentTask?.mrUrl && (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
-                MR !{currentTask.mrIid}
-              </div>
-              <a href={currentTask.mrUrl} target="_blank" rel="noopener noreferrer">
-                <Button type="primary" icon={<PullRequestOutlined />}>
-                  在 GitLab 中查看
-                </Button>
-              </a>
-            </div>
-          )}
-          {!currentTask?.mrUrl && currentTask?.steps.find((s) => s.key === 'wait')?.status === 'process' && (
+          {currentTask?.steps.find((s) => s.key === 'wait')?.status === 'process' && (
             <div style={{ color: token.colorTextSecondary, fontSize: 13 }}>
               等待 MR 合并...
             </div>
