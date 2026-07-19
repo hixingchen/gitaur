@@ -20,6 +20,12 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|_window, event| {
+            // 窗口关闭时停止文件监听，防止 OS 级资源残留
+            if let tauri::WindowEvent::Destroyed = event {
+                watcher::stop_watching();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // Git commands
             get_repo_status,

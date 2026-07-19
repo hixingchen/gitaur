@@ -9,6 +9,13 @@ import { useMemo, useEffect, useState, memo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { List as FixedSizeList } from 'react-window';
 
+/** 从双字符状态码中提取用于显示的单字符（index 或 worktree） */
+function displayStatus(file: { status: string; staged: boolean }): string {
+  // status 是双字符如 " M"（unstaged 修改）、"A "（staged 新增）、"UU"（冲突）
+  if (file.staged) return file.status[0] === ' ' ? file.status[1] : file.status[0];
+  return file.status[1] === ' ' ? file.status[0] : file.status[1];
+}
+
 function statusLabel(c: string): string {
   const m: Record<string, string> = { M: '修改', A: '新增', D: '删除', R: '重命名', '?': '新增' };
   return m[c] || c;
@@ -35,8 +42,9 @@ const FileItem = memo(function FileItem({
 }) {
   const selectedFile = useViewStore((s) => s.selectedFile);
   const isSelected = selectedFile === file.path;
-  const cfg = statusCfg[file.status] || statusCfg['?'];
-  const isConflict = hasConflicts && ['M', 'D', 'A'].includes(file.status);
+  const dispStatus = displayStatus(file);
+  const cfg = statusCfg[dispStatus] || statusCfg['?'];
+  const isConflict = hasConflicts && ['M', 'D', 'A'].includes(dispStatus);
   // 跨平台路径分割：同时处理 / 和 \
   const parts = file.path.split(/[/\\]/);
   const name = parts.pop() || file.path;

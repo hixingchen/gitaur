@@ -4,7 +4,10 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct FileStatus {
     pub path: String,
-    pub status: char,       // M=modified, A=added, D=deleted, R=renamed, ?=untracked
+    /// 双字符状态码（XY）：X=index 状态, Y=worktree 状态
+    /// 冲突状态: UU/AA/DD/AU/UA/UD/DU
+    /// 普通状态: " M"/"M "/"A "/" D"/"??" 等
+    pub status: String,
     pub staged: bool,
 }
 
@@ -54,7 +57,8 @@ pub fn parse_status(raw: &str) -> Vec<FileStatus> {
 
             // M/A/D/R in index → staged；'?' or ' ' → unstaged
             let staged = index_status != ' ' && index_status != '?';
-            let status = if staged { index_status } else { worktree_status };
+            // 存储完整双字符状态码，前端依赖此值检测冲突（UU/AA/DD 等）
+            let status = format!("{}{}", index_status, worktree_status);
 
             Some(FileStatus { path, status, staged })
         })
@@ -130,7 +134,7 @@ mod tests {
         let result = parse_status(input);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].path, "src/main.rs");
-        assert_eq!(result[0].status, 'M');
+        assert_eq!(result[0].status, " M");
         assert!(!result[0].staged);
     }
 

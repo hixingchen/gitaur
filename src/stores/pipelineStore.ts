@@ -238,6 +238,39 @@ function getTask(taskId: string): { repoPath: string; tasks: PipelineTask[]; tas
   return { repoPath, tasks, task };
 }
 
+/** 自动选择 GitLab 项目（从 repoPath 提取项目名匹配） */
+async function autoSelectGitLabProject(repoPath: string): Promise<boolean> {
+  const gitlabStore = useGitLabStore.getState();
+  if (!gitlabStore.service || gitlabStore.currentProject) return !!gitlabStore.currentProject;
+  const repoName = repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
+  try {
+    await gitlabStore.searchProjects(repoName);
+    const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
+    if (matched) {
+      gitlabStore.selectProject(matched);
+      return true;
+    }
+  } catch (e) {
+    console.warn('[autoSelectGitLabProject] search failed:', e);
+  }
+  return false;
+}
+
+/** 从 tasksByRepo 中移除指定任务并持久化 */
+function removeTaskFromStore(repoPath: string, taskId: string, set: (fn: (state: any) => any) => void) {
+  set((state) => {
+    const newTasksByRepo = {
+      ...state.tasksByRepo,
+      [repoPath]: (state.tasksByRepo[repoPath] || []).filter((t: PipelineTask) => t.id !== taskId),
+    };
+    persistTasks(newTasksByRepo);
+    return {
+      tasksByRepo: newTasksByRepo,
+      currentTask: state.currentTask?.id === taskId ? null : state.currentTask,
+    };
+  });
+}
+
 // 持久化文件名
 const STORE_FILE = 'pipeline.json';
 let _storeInstance: Store | null = null;
@@ -753,20 +786,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         let { service, currentProject } = gitlabStore;
 
         // 如果没有选择项目，尝试自动选择
-        if (service && !currentProject) {
-          if (repoPath) {
-            const repoName = repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
-            try {
-              await gitlabStore.searchProjects(repoName);
-              const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
-              if (matched) {
-                gitlabStore.selectProject(matched);
-                currentProject = matched;
-              }
-            } catch (e) {
-              console.error('createMR: auto search failed', e);
-            }
-          }
+        if (service && !currentProject && repoPath) {
+          await autoSelectGitLabProject(repoPath);
+          currentProject = useGitLabStore.getState().currentProject;
         }
 
         if (service && currentProject) {
@@ -860,20 +882,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       let { service, currentProject } = gitlabStore;
 
       // 如果没有选择项目，尝试自动选择
-      if (service && !currentProject) {
-        if (repoPath) {
-          const repoName = repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
-          try {
-            await gitlabStore.searchProjects(repoName);
-            const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
-            if (matched) {
-              gitlabStore.selectProject(matched);
-              currentProject = matched;
-            }
-          } catch (e) {
-            console.error('createVersionMR: auto search failed', e);
-          }
-        }
+      if (service && !currentProject && repoPath) {
+        await autoSelectGitLabProject(repoPath);
+        currentProject = useGitLabStore.getState().currentProject;
       }
 
       if (!service || !currentProject) {
@@ -1070,107 +1081,62 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const { service, currentProject } = gitlabStore;
 
       if (task.taskType === 'version') {
-        // 版本任务：关闭两个 MR
         const mrMainStep = task.steps.find((s) => s.key === 'mr_main');
         if (mrMainStep?.status === 'finish' && task.mrMainIid && service && currentProject) {
           try {
             await service.closeMergeRequest(currentProject.path_with_namespace, task.mrMainIid);
-          } catch {
-            // MR 可能已经关闭，忽略
-          }
+          } catch (e) { console.warn('deleteTask: 关闭 MR→main 失败（已忽略）:', e); }
         }
         const mrDevStep = task.steps.find((s) => s.key === 'mr_dev');
         if (mrDevStep?.status === 'finish' && task.mrDevIid && service && currentProject) {
           try {
             await service.closeMergeRequest(currentProject.path_with_namespace, task.mrDevIid);
-          } catch {
-            // MR 可能已经关闭，忽略
-          }
+          } catch (e) { console.warn('deleteTask: 关闭 MR→develop 失败（已忽略）:', e); }
         }
       } else {
-        // Feature 任务：关闭一个 MR
         const mrStep = task.steps.find((s) => s.key === 'mr');
         if (mrStep?.status === 'finish' && task.mrIid && service && currentProject) {
           try {
             await service.closeMergeRequest(currentProject.path_with_namespace, task.mrIid);
-          } catch {
-            // MR 可能已经关闭，忽略
-          }
+          } catch (e) { console.warn('deleteTask: 关闭 MR 失败（已忽略）:', e); }
         }
       }
 
-      // 3. 切回目标分支（版本任务切回 develop，feature 切回目标分支）
+      // 3. 切回目标分支
       try {
         const checkoutTarget = task.taskType === 'version'
           ? (useBranchTagStore.getState().getTargetBranch(repoPath) || 'develop')
           : task.mrSettings.targetBranch;
-        await invoke('git_checkout', {
-          repoPath,
-          target: checkoutTarget,
-          createBranch: false,
-          startPoint: null,
-        });
-      } catch {
-        // 忽略
-      }
+        await invoke('git_checkout', { repoPath, target: checkoutTarget, createBranch: false, startPoint: null });
+      } catch (e) { console.warn('deleteTask: 切回目标分支失败（已忽略）:', e); }
 
       // 4. 删除本地分支
       const branchStep = task.steps.find((s) => s.key === 'branch');
       if (branchStep?.status === 'finish') {
         try {
           await invoke('git_branch_delete', { repoPath, branch: task.branchName, force: true });
-        } catch {
-          // 可能正在当前分支或已删除，忽略
-        }
+        } catch (e) { console.warn('deleteTask: 删除本地分支失败（已忽略）:', e); }
       }
 
-      // 5. 删除远程分支（不管 pipeline 有没有记录推送，都尝试删）
+      // 5. 删除远程分支
       try {
-        await invoke('git_push', {
-          repoPath,
-          remote: 'origin',
-          force: false,
-          delete: true,
-          branch: task.branchName,
-        });
-      } catch {
-        // 远程分支可能已删除，忽略
-      }
+        await invoke('git_push', { repoPath, remote: 'origin', force: false, delete: true, branch: task.branchName });
+      } catch (e) { console.warn('deleteTask: 删除远程分支失败（已忽略）:', e); }
 
       await useRepoStore.getState().refreshStatus();
 
       // 6. 移除任务分支标签
       try {
         await useBranchTagStore.getState().removeTag(repoPath, task.branchName);
-      } catch {
-        // 忽略
-      }
+      } catch (e) { console.warn('deleteTask: 移除标签失败（已忽略）:', e); }
 
       // 7. 从列表移除
-      set((state) => {
-        const repoTasks = (state.tasksByRepo[repoPath] || []).filter((t) => t.id !== taskId);
-        const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo);
-        return {
-          tasksByRepo: newTasksByRepo,
-          currentTask: state.currentTask?.id === taskId ? null : state.currentTask,
-        };
-      });
-
+      removeTaskFromStore(repoPath, taskId, set);
       message.success('任务已删除，分支和 MR 已清理');
 
     } catch (e) {
       console.error('deleteTask error:', e);
-      // 兜底：至少从列表移除
-      set((state) => {
-        const repoTasks = (state.tasksByRepo[repoPath] || []).filter((t) => t.id !== taskId);
-        const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-        persistTasks(newTasksByRepo);
-        return {
-          tasksByRepo: newTasksByRepo,
-          currentTask: state.currentTask?.id === taskId ? null : state.currentTask,
-        };
-      });
+      removeTaskFromStore(repoPath, taskId, set);
       message.error('删除任务失败');
     }
   },
@@ -1431,17 +1397,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
     // 如果没有选择项目，尝试自动选择
     if (!currentProject && repoPath) {
-      const repoName = repoPath.replace(/[/\\]$/, '').split(/[/\\]/).pop() || '';
-      try {
-        await gitlabStore.searchProjects(repoName);
-        const matched = gitlabStore.projects.find((p) => p.path === repoName || p.name === repoName);
-        if (matched) {
-          gitlabStore.selectProject(matched);
-          currentProject = matched;
-        }
-      } catch (e) {
-        console.warn('[pollMrStatus] Auto-select project failed:', e);
-      }
+      await autoSelectGitLabProject(repoPath);
+      currentProject = useGitLabStore.getState().currentProject;
     }
 
     if (!currentProject) return;

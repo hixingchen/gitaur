@@ -795,6 +795,10 @@ pub fn git_stage(repo_path: String, files: Vec<String>) -> Result<String, String
     let mut args = vec!["add"];
     args.extend(file_refs);
     let output = executor::execute(&repo_path, &args)?;
+    if !output.is_success() {
+        log::error!("git stage failed: {}", output.stderr);
+        return Err(format!("暂存文件失败: {}", output.stderr));
+    }
     Ok(output.stdout)
 }
 
@@ -811,12 +815,15 @@ pub fn git_unstage(repo_path: String, files: Vec<String>) -> Result<String, Stri
     let output = executor::execute(&repo_path, &args)?;
 
     // 如果 reset 失败（可能是新增文件），尝试 rm --cached
-    if !output.stderr.is_empty() || output.stdout.is_empty() {
+    if !output.is_success() {
         let mut rm_args = vec!["rm", "--cached", "--"];
         rm_args.extend(file_refs);
-        if let Err(e) = executor::execute(&repo_path, &rm_args) {
-            log::debug!("git rm --cached fallback failed: {}", e);
+        match executor::execute(&repo_path, &rm_args) {
+            Ok(rm_output) if rm_output.is_success() => return Ok(rm_output.stdout),
+            Err(e) => log::debug!("git rm --cached fallback failed: {}", e),
+            Ok(rm_output) => log::debug!("git rm --cached fallback failed: {}", rm_output.stderr),
         }
+        return Err(format!("取消暂存失败: {}", output.stderr));
     }
 
     Ok(output.stdout)
@@ -826,6 +833,10 @@ pub fn git_unstage(repo_path: String, files: Vec<String>) -> Result<String, Stri
 pub fn git_stage_all(repo_path: String) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["add", "-A"])?;
+    if !output.is_success() {
+        log::error!("git stage all failed: {}", output.stderr);
+        return Err(format!("暂存所有文件失败: {}", output.stderr));
+    }
     Ok(output.stdout)
 }
 
@@ -1050,12 +1061,12 @@ pub fn git_tag_list(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn git_push_tags(repo_path: String) -> Result<(), String> {
+pub fn git_push_tags(repo_path: String) -> Result<(), String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
 
     let output = executor::execute(&repo_path, &["push", "origin", "--tags"])?;
     if !output.is_success() {
-        return Err(output.error_message().unwrap_or("Failed to push tags").to_string());
+        return Err(output.error_message().unwrap_or("推送标签失败").to_string());
     }
     Ok(())
 }
