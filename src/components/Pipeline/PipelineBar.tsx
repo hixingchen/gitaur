@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Button, Steps, Tag, Space, Input, Modal, Typography, theme, message,
 } from 'antd';
@@ -81,58 +82,50 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const [createMRModalOpen, setCreateMRModalOpen] = useState(false);
   const [mrCommitMessage, setMrCommitMessage] = useState('');
 
-  // 获取提交历史并生成默认的提交消息
+  // 获取提交历史并生成默认的提交消息（保留完整换行）
   const getDefaultCommitMessage = useCallback(async () => {
+    if (!repoPath) return '';
     try {
-      // 用 baseRef 只加载任务分支独有的提交（排除源分支的提交）
-      // 版本任务：release 从 develop 切出，hotfix 从 main 切出
-      // feature 任务：从 targetBranch 切出
+      // 确定基准分支
       let baseRef: string;
       if (task.taskType === 'version' && task.versionType === 'release') {
-        // release 分支从 develop 切出，baseRef 应该是 develop
         const { useBranchTagStore } = await import('../../stores/branchTagStore');
         const branchTagStore = useBranchTagStore.getState();
-        const devBranch = branchTagStore.getTargetBranch(repoPath || '');
+        const devBranch = branchTagStore.getTargetBranch(repoPath);
         baseRef = `origin/${devBranch || 'develop'}`;
       } else {
-        // hotfix 从 main 切出，feature 从 targetBranch 切出
         baseRef = `origin/${task.mrSettings.targetBranch}`;
       }
-      await loadLog(50, task.branchName, baseRef);
 
-      // 等待一下让 logEntries 更新
-      await new Promise(resolve => setTimeout(resolve, 200));
+      // 用 git_collect_messages 获取完整消息（含换行）
+      const messages = await invoke<string[]>('git_collect_messages', {
+        repoPath,
+        branch: task.branchName,
+        baseRef,
+        maxCount: 100,
+      });
 
-      const currentLogEntries = useRepoStore.getState().logEntries;
-
-      if (currentLogEntries.length === 0) {
-        return '';
-      }
+      if (!messages || messages.length === 0) return '';
 
       if (task.mrSettings.squash) {
         // Squash 模式：拼接所有提交消息（按时间正序，先提交的在上）
-        const messages = [...currentLogEntries].reverse().map((entry) => entry.message);
-        return messages.join('\n');
+        return [...messages].reverse().join('\n\n');
       } else {
         // 非 Squash 模式：使用最新的提交消息
-        return currentLogEntries[0].message;
+        return messages[0];
       }
     } catch (error) {
       console.warn('获取提交历史失败:', error);
       return '';
     }
-  }, [loadLog, repoPath, task.branchName, task.taskType, task.versionType, task.mrSettings.squash, task.mrSettings.targetBranch]);
+  }, [repoPath, task.branchName, task.taskType, task.versionType, task.mrSettings.squash, task.mrSettings.targetBranch]);
 
-  // 打开创建 MR 弹窗（自动合并时需要填消息，否则直接创建）
+  // 打开创建 MR 弹窗（预填提交消息，用户可编辑）
   const handleOpenCreateMRModal = useCallback(async () => {
-    if (task.mrSettings.autoMerge) {
-      const defaultMessage = await getDefaultCommitMessage();
-      setMrCommitMessage(defaultMessage);
-      setCreateMRModalOpen(true);
-    } else {
-      createMR(task.id);
-    }
-  }, [getDefaultCommitMessage, task.mrSettings.autoMerge, task.id, createMR]);
+    const defaultMessage = await getDefaultCommitMessage();
+    setMrCommitMessage(defaultMessage);
+    setCreateMRModalOpen(true);
+  }, [getDefaultCommitMessage]);
 
   // 打开创建版本 MR 弹窗（预填提交消息）
   const handleOpenCreateVersionMRModal = useCallback(async () => {
@@ -593,8 +586,7 @@ export function PipelineBar({ task }: PipelineBarProps) {
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
           placeholder="请填写提交备注"
-          autoSize={{ minRows: 2, maxRows: 4 }}
-          maxLength={200}
+          autoSize={{ minRows: 2, maxRows: 6 }}
         />
       </Modal>
 
@@ -629,8 +621,7 @@ export function PipelineBar({ task }: PipelineBarProps) {
           value={mrCommitMessage}
           onChange={(e) => setMrCommitMessage(e.target.value)}
           placeholder={task.mrSettings.squash ? '留空则自动拼接所有提交消息' : '留空则使用默认消息'}
-          autoSize={{ minRows: 2, maxRows: 4 }}
-          maxLength={500}
+          autoSize={{ minRows: 2, maxRows: 6 }}
         />
         <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
           提示：此消息将作为自动合并时的提交消息

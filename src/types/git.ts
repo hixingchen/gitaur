@@ -63,8 +63,6 @@ export interface RepoInfo {
 /** User-facing application settings */
 export interface AppSettings {
   theme: 'light' | 'dark';
-  gitUserName: string;
-  gitUserEmail: string;
   gitlabUrl: string;
   gitlabToken: string;
   recentRepos: string[];

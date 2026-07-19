@@ -403,6 +403,39 @@ pub fn git_log_find_by_message(
     Ok(output.stdout)
 }
 
+/// 收集分支上的完整 commit messages（含换行），用于生成 squash 默认消息
+#[tauri::command]
+pub fn git_collect_messages(
+    repo_path: String,
+    branch: String,
+    base_ref: String,
+    max_count: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    validate_ref(&branch)?;
+    validate_ref(&base_ref)?;
+    let count = max_count.unwrap_or(100).to_string();
+    let range = format!("{}..{}", base_ref, branch);
+
+    // %B = full body（含换行），用 \x00\x00 分隔不同 commit
+    let output = executor::execute(&repo_path, &[
+        "log",
+        &range,
+        "--no-merges",
+        "--format=%B%x00%x00",
+        "--max-count",
+        &count,
+    ])?;
+
+    let messages: Vec<String> = output.stdout
+        .split("\x00\x00")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Ok(messages)
+}
+
 /// 查找分支上最新的非合并提交（用于找到 squash 提交）
 #[tauri::command]
 pub fn git_find_latest_non_merge_commit(

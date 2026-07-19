@@ -3,7 +3,7 @@ import {
   Form, Input, Button, Card, Space, Typography, message,
 } from 'antd';
 import {
-  SaveOutlined, ReloadOutlined, BranchesOutlined,
+  SaveOutlined, ReloadOutlined,
   CloudOutlined, SettingOutlined, FolderOpenOutlined,
 } from '@ant-design/icons';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -52,25 +52,6 @@ export function SettingsPage() {
       </div>
 
       <Form form={form} layout="vertical" initialValues={settings}>
-        {/* Git 用户信息 */}
-        <Card
-          title={
-            <Space>
-              <BranchesOutlined />
-              <span>Git 用户信息</span>
-            </Space>
-          }
-          size="small"
-          style={{ marginBottom: 16 }}
-        >
-          <Form.Item name="gitUserName" label="用户名" extra="提交时显示的作者名称">
-            <Input placeholder="张三" />
-          </Form.Item>
-          <Form.Item name="gitUserEmail" label="邮箱" extra="提交时显示的作者邮箱">
-            <Input placeholder="zhangsan@example.com" />
-          </Form.Item>
-        </Card>
-
         {/* GitLab 配置 */}
         <Card
           title={

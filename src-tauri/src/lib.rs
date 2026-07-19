@@ -52,6 +52,7 @@ pub fn run() {
             git_tag_list,
             git_push_tags,
             git_log_find_by_message,
+            git_collect_messages,
             git_find_latest_non_merge_commit,
             // Repo commands
             validate_repo_path,

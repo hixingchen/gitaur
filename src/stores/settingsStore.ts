@@ -13,8 +13,6 @@ interface SettingsState {
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
-  gitUserName: '',
-  gitUserEmail: '',
   gitlabUrl: 'https://gitlab.com',
   gitlabToken: '',
   recentRepos: [],

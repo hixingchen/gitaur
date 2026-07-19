@@ -3,6 +3,23 @@ import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { message } from 'antd';
 import { useRepoStore } from './repoStore';
+
+/** 收集分支上的所有 commit message，拼接为 squash 默认消息 */
+async function collectBranchMessages(repoPath: string, branchName: string, targetBranch: string): Promise<string | undefined> {
+  try {
+    const messages = await invoke<string[]>('git_collect_messages', {
+      repoPath,
+      branch: branchName,
+      baseRef: `origin/${targetBranch}`,
+      maxCount: 100,
+    });
+    if (!messages || messages.length === 0) return undefined;
+    // 每个 commit message 保留原始换行，commit 之间用空行分隔
+    return messages.join('\n\n');
+  } catch {
+    return undefined;
+  }
+}
 import { useGitLabStore } from './gitlabStore';
 import { useBranchTagStore } from './branchTagStore';
 
@@ -755,6 +772,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         if (service && currentProject) {
           try {
             const mrTitle = task.mrSettings.title || task.name;
+            // 用户未提供 message 时，自动收集分支 commit messages
+            let squashMsg = commitMessage || undefined;
+            if (!squashMsg && task.mrSettings.squash) {
+              squashMsg = await collectBranchMessages(repoPath, task.branchName, task.mrSettings.targetBranch);
+            }
             const mr = await service.createMergeRequest(
               currentProject.path_with_namespace,
               {
@@ -764,11 +786,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
                 description: task.mrSettings.description || '',
                 remove_source_branch: task.mrSettings.deleteBranchAfterMerge,
                 squash: task.mrSettings.squash,
-                squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
+                squash_commit_message: task.mrSettings.squash ? squashMsg : undefined,
               },
             );
 
-            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url || undefined, squashCommitMessage: commitMessage || undefined };
+            currentTask = { ...currentTask, mrIid: mr.iid, mrUrl: mr.web_url || undefined, squashCommitMessage: squashMsg };
             currentTask = updateStep(currentTask, 'mr', {
               status: 'finish', endTime: Date.now(), description: `MR !${mr.iid}`,
             });
@@ -866,19 +888,43 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const branchTagStore = useBranchTagStore.getState();
       const devBranch = branchTagStore.getTargetBranch(repoPath) || 'develop';
 
-      // Release 任务：先合并 main 到 release，避免 MR 冲突
-      if (task.versionType === 'release') {
+      // Release 任务：先合并 main 到 release，避免 MR→main 冲突
+      // Hotfix 任务：先合并 develop 到 hotfix，避免 MR→develop 冲突
+      if (task.versionType === 'release' || task.versionType === 'hotfix') {
+        await invoke('git_fetch', { repoPath });
+        // release 合并 main（targetBranch），hotfix 合并 develop（devBranch）
+        const mergeSource = task.versionType === 'release'
+          ? `origin/${task.mrSettings.targetBranch}`
+          : `origin/${devBranch}`;
         try {
-          await invoke('git_fetch', { repoPath });
-          await invoke('git_merge', {
-            repoPath,
-            branch: `origin/${task.mrSettings.targetBranch}`,
-            strategy: 'ours',
-          });
+          await invoke('git_merge', { repoPath, branch: mergeSource });
         } catch (mergeError) {
-          console.warn('合并 main 到 release 失败:', mergeError);
-          // 合并失败继续创建 MR，让用户手动解决
+          // 有冲突 → abort 后用 ours 策略重试（保留当前版本分支内容）
+          try {
+            await invoke('git_merge_abort', { repoPath });
+          } catch { /* 忽略 abort 失败 */ }
+          try {
+            await invoke('git_merge', { repoPath, branch: mergeSource, strategy: 'ours' });
+          } catch (retryError) {
+            message.error('合并目标分支失败，请手动解决冲突后重试');
+            currentTask = setTaskStatus(currentTask, 'paused', '合并目标分支失败');
+            currentTask = { ...currentTask, phase: 'developing' };
+            updateTask(currentTask);
+            return;
+          }
         }
+        // 合并后推送到远程，确保 MR 无冲突
+        try {
+          await invoke('git_push', { repoPath, remote: 'origin', force: true });
+        } catch (pushError) {
+          console.warn('推送合并结果失败:', pushError);
+        }
+      }
+
+      // 用户未提供 message 时，自动收集分支 commit messages
+      let squashMsg = commitMessage || undefined;
+      if (!squashMsg && task.mrSettings.squash) {
+        squashMsg = await collectBranchMessages(repoPath, task.branchName, task.mrSettings.targetBranch);
       }
 
       // 并行创建两个 MR
@@ -893,7 +939,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             description: task.mrSettings.description || '',
             remove_source_branch: false, // 不删除，等两个 MR 都合并
             squash: task.mrSettings.squash,
-            squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
+            squash_commit_message: task.mrSettings.squash ? squashMsg : undefined,
           },
         ),
         // MR→develop
@@ -906,7 +952,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             description: task.mrSettings.description || '',
             remove_source_branch: false, // 不删除，等两个 MR 都合并
             squash: task.mrSettings.squash,
-            squash_commit_message: task.mrSettings.squash ? (commitMessage || undefined) : undefined,
+            squash_commit_message: task.mrSettings.squash ? squashMsg : undefined,
           },
         ),
       ]);
@@ -1706,17 +1752,20 @@ async function executeTagAndCleanup(
 ) {
   // 先打 Tag
   let task = currentTask;
+  // 将 wait 步骤标记为完成（无论是否有版本号）
+  task = updateStep(task, 'wait', {
+    status: 'finish', endTime: Date.now(), description: '已合并',
+  });
   if (task.version) {
-    // 先将 wait 步骤标记为完成
-    task = updateStep(task, 'wait', {
-      status: 'finish', endTime: Date.now(), description: '已合并',
-    });
     task = updateStep(task, 'tag', {
       status: 'process', startTime: Date.now(), description: '正在打 Tag...',
     });
     task = setTaskStatus(task, 'running');
     task = { ...task, phase: 'tagging' as PipelinePhase };
     updateTaskInStore(task, taskId, repoPath);
+
+    // 让出 UI 线程，确保状态更新渲染到界面
+    await new Promise<void>(r => setTimeout(r, 50));
 
     try {
       // 1. Fetch 最新远程
@@ -1812,6 +1861,9 @@ async function executeCleanup(
 
   updateTaskInStore(task, taskId, repoPath);
 
+  // 让出 UI 线程，确保状态更新渲染到界面
+  await new Promise<void>(r => setTimeout(r, 50));
+
   try {
     // 1. 确保在目标分支上（先切换，避免删除当前分支失败）
     // 版本任务切回 develop，feature 任务切回目标分支
@@ -1824,6 +1876,7 @@ async function executeCleanup(
       createBranch: false,
       startPoint: null,
     });
+    await new Promise<void>(r => setTimeout(r, 30));
 
     // 2. 删除本地分支（MR 已合并，分支内容已在目标分支中，可安全强制删除）
     try {
@@ -1832,6 +1885,7 @@ async function executeCleanup(
       // 分支可能已经不存在，忽略
       console.warn('删除本地分支失败（可能已删除）:', e);
     }
+    await new Promise<void>(r => setTimeout(r, 30));
 
     // 3. 删除远程分支
     let remoteDeleted = false;
@@ -1853,6 +1907,7 @@ async function executeCleanup(
         // 忽略
       }
     }
+    await new Promise<void>(r => setTimeout(r, 30));
 
     // 4. 执行 fetch（含 prune）清理远程已删除的分支引用
     await invoke('git_fetch', { repoPath });

@@ -177,7 +177,7 @@ export function CommitDetailPanel() {
               style={{ color: 'var(--ant-color-text-tertiary)' }} />
           </Tooltip>
         </div>
-        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--ant-color-text)', lineHeight: '20px' }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--ant-color-text)', lineHeight: '20px', whiteSpace: 'pre-wrap' }}>
           {commitDetail.message}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
