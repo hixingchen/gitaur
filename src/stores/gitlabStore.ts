@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { GitLabService, type GitLabMergeRequest, type GitLabProject, type CreateMergeRequestParams } from '../services/gitlab';
 import { useSettingsStore } from './settingsStore';
+import { handleStoreError } from '../utils/error';
 
 interface GitLabState {
   service: GitLabService | null;
@@ -69,7 +70,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       _projectCache.set(query, { projects, ts: Date.now() });
       set({ projects, loading: false });
     } catch (e) {
-      set({ error: `搜索项目失败: ${e}`, loading: false });
+      set({ error: handleStoreError('searchProjects', e), loading: false });
     }
   },
 
@@ -92,7 +93,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       );
       set({ mergeRequests, loading: false });
     } catch (e) {
-      set({ error: `加载 MR 列表失败: ${e}`, loading: false });
+      set({ error: handleStoreError('loadMergeRequests', e), loading: false });
     }
   },
 
@@ -119,7 +120,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       }));
       return mr;
     } catch (e) {
-      set({ error: `创建 MR 失败: ${e}`, loading: false });
+      set({ error: handleStoreError('createMergeRequest', e), loading: false });
       return null;
     }
   },
@@ -143,7 +144,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       set({ loading: false });
       return true;
     } catch (e) {
-      set({ error: `合并 MR 失败: ${e}`, loading: false });
+      set({ error: handleStoreError('mergeMR', e), loading: false });
       return false;
     }
   },
@@ -165,7 +166,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       set({ loading: false });
       return true;
     } catch (e) {
-      set({ error: `关闭 MR 失败: ${e}`, loading: false });
+      set({ error: handleStoreError('closeMR', e), loading: false });
       return false;
     }
   },
@@ -187,7 +188,7 @@ export const useGitLabStore = create<GitLabState>((set, get) => ({
       set({ loading: false });
       return true;
     } catch (e) {
-      set({ error: `审批 MR 失败: ${e}`, loading: false });
+      set({ error: handleStoreError('approveMR', e), loading: false });
       return false;
     }
   },

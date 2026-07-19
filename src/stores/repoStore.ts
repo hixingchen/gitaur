@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { RepoInfo, LogEntry, CommitDetail } from '../types/git';
 import { invoke } from '@tauri-apps/api/core';
 import { useViewStore } from './viewStore';
+import { handleStoreError } from '../utils/error';
 
 // 请求 ID 计数器 — 防止并发请求竞态（旧响应覆盖新状态）
 let _statusRequestId = 0;
@@ -104,7 +105,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         console.warn('文件监听启动失败（不影响主功能）:', e);
       });
     } catch (e) {
-      if (reqId === _statusRequestId) set({ error: String(e), loading: false });
+      if (reqId === _statusRequestId) set({ error: handleStoreError('openRepo', e), loading: false });
     }
   },
 
@@ -117,7 +118,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath });
       if (reqId === _statusRequestId) set({ repoInfo: info, loading: false });
     } catch (e) {
-      if (reqId === _statusRequestId) set({ error: String(e), loading: false });
+      if (reqId === _statusRequestId) set({ error: handleStoreError('refreshStatus', e), loading: false });
     }
   },
 
@@ -157,7 +158,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       }
       set({ repoInfo: { ...info, status: ordered } });
     } catch (e) {
-      if (reqId === _statusRequestId) set({ error: String(e) });
+      if (reqId === _statusRequestId) set({ error: handleStoreError('refreshStatusSilent', e) });
     }
   },
 
@@ -183,7 +184,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       });
       if (reqId === _logRequestId) set({ logEntries: entries, logLoading: false });
     } catch (e) {
-      if (reqId === _logRequestId) set({ error: String(e), logLoading: false });
+      if (reqId === _logRequestId) set({ error: handleStoreError('loadLog', e), logLoading: false });
     }
   },
 
@@ -196,7 +197,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ error: handleStoreError('commit', e), loading: false });
     }
   },
 
@@ -212,7 +213,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ error: handleStoreError('checkout', e), loading: false });
       throw e;
     }
   },
@@ -226,7 +227,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ error: handleStoreError('push', e), loading: false });
     }
   },
 
@@ -239,7 +240,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ error: handleStoreError('pull', e), loading: false });
     }
   },
 
@@ -251,7 +252,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await invoke('git_merge', { repoPath, branch });
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('merge', e) });
     } finally {
       set({ loading: false });
     }
@@ -265,7 +266,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await invoke('git_rebase', { repoPath, onto });
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('rebase', e) });
     } finally {
       set({ loading: false });
     }
@@ -279,7 +280,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await invoke('git_abort_rebase', { repoPath });
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('abortRebase', e) });
     } finally {
       set({ loading: false });
     }
@@ -293,7 +294,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await invoke('git_rebase_continue', { repoPath });
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('rebaseContinue', e) });
     } finally {
       set({ loading: false });
     }
@@ -314,7 +315,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       }
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('abortConflict', e) });
     } finally {
       set({ loading: false });
     }
@@ -335,7 +336,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       }
       await get().refreshStatus();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('continueConflict', e) });
     } finally {
       set({ loading: false });
     }
@@ -355,7 +356,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     try {
       await invoke('git_stage', { repoPath, files: [file] });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('stageFile', e) });
     }
     await get().refreshStatusSilent();
   },
@@ -374,7 +375,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     try {
       await invoke('git_unstage', { repoPath, files: [file] });
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('unstageFile', e) });
     }
     await get().refreshStatusSilent();
   },
@@ -386,7 +387,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await invoke('git_stage_all', { repoPath });
       await get().refreshStatusSilent();
     } catch (e) {
-      set({ error: String(e) });
+      set({ error: handleStoreError('stageAll', e) });
     }
   },
 
@@ -413,7 +414,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       await get().refreshStatus();
       set({ loading: false });
     } catch (e) {
-      set({ error: String(e), loading: false });
+      set({ error: handleStoreError('renameBranch', e), loading: false });
     }
   },
 
@@ -426,7 +427,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const detail = await invoke<CommitDetail>('get_commit_detail', { repoPath, hash });
       if (reqId === _commitDetailRequestId) set({ commitDetail: detail, commitDetailLoading: false });
     } catch (e) {
-      if (reqId === _commitDetailRequestId) set({ error: String(e), commitDetailLoading: false });
+      if (reqId === _commitDetailRequestId) set({ error: handleStoreError('loadCommitDetail', e), commitDetailLoading: false });
     }
   },
 
@@ -439,7 +440,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const diff = await invoke<string>('get_commit_file_diff', { repoPath, hash, file });
       if (reqId === _commitFileDiffRequestId) set({ commitFileDiff: diff, commitFileDiffLoading: false });
     } catch (e) {
-      if (reqId === _commitFileDiffRequestId) set({ error: String(e), commitFileDiffLoading: false });
+      if (reqId === _commitFileDiffRequestId) set({ error: handleStoreError('loadCommitFileDiff', e), commitFileDiffLoading: false });
     }
   },
 

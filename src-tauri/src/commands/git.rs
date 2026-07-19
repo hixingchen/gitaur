@@ -471,9 +471,10 @@ pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>, strateg
     args.push("--no-edit");
     let output = executor::execute(&repo_path, &args)?;
     if output.exit_code != 0 {
-        return Err(format!("{}\n{}", output.stdout, output.stderr));
+        log::error!("git merge failed: stdout={}, stderr={}", output.stdout, output.stderr);
+        return Err("合并失败，请查看日志了解详情".to_string());
     }
-    Ok(format!("{}\n{}", output.stdout, output.stderr))
+    Ok(output.stdout)
 }
 
 #[tauri::command]
@@ -490,9 +491,10 @@ pub fn git_rebase(repo_path: String, onto: String) -> Result<String, String> {
 
     let output = executor::execute(&repo_path, &["rebase", &onto])?;
     if output.exit_code != 0 {
-        return Err(format!("{}\n{}", output.stdout, output.stderr));
+        log::error!("git rebase failed: stdout={}, stderr={}", output.stdout, output.stderr);
+        return Err("变基失败，请查看日志了解详情".to_string());
     }
-    Ok(format!("{}\n{}", output.stdout, output.stderr))
+    Ok(output.stdout)
 }
 
 #[tauri::command]
@@ -500,7 +502,8 @@ pub fn git_abort_rebase(repo_path: String) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["rebase", "--abort"])?;
     if output.exit_code != 0 {
-        return Err(format!("{}\n{}", output.stdout, output.stderr));
+        log::error!("git rebase --abort failed: stdout={}, stderr={}", output.stdout, output.stderr);
+        return Err("中止变基失败".to_string());
     }
     Ok(output.stdout)
 }
@@ -510,7 +513,8 @@ pub fn git_rebase_continue(repo_path: String) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["rebase", "--continue"])?;
     if output.exit_code != 0 {
-        return Err(format!("{}\n{}", output.stdout, output.stderr));
+        log::error!("git rebase --continue failed: stdout={}, stderr={}", output.stdout, output.stderr);
+        return Err("继续变基失败，请查看日志了解详情".to_string());
     }
     Ok(output.stdout)
 }
@@ -520,7 +524,8 @@ pub fn git_merge_abort(repo_path: String) -> Result<String, String> {
     let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
     let output = executor::execute(&repo_path, &["merge", "--abort"])?;
     if output.exit_code != 0 {
-        return Err(format!("{}\n{}", output.stdout, output.stderr));
+        log::error!("git merge --abort failed: stdout={}, stderr={}", output.stdout, output.stderr);
+        return Err("中止合并失败".to_string());
     }
     Ok(output.stdout)
 }

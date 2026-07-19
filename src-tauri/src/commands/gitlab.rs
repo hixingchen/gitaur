@@ -119,7 +119,8 @@ pub(crate) fn validate_external_url(url: &str) -> Result<(), String> {
             if let Ok(addrs) = host_with_port.to_socket_addrs() {
                 for addr in addrs {
                     if is_private_ip(&addr.ip()) {
-                        return Err(format!("域名解析到内网地址: {}", addr.ip()));
+                        log::warn!("域名解析到内网地址: {}", addr.ip());
+                        return Err("域名解析到内网地址，请求已阻止".to_string());
                     }
                 }
             }
@@ -287,7 +288,8 @@ pub async fn gitlab_request(
     let status = response.status();
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("GitLab API error ({}): {}", status, error_text));
+        log::error!("GitLab API error ({}): {}", status, error_text);
+        return Err(format!("GitLab 请求失败 (HTTP {})", status));
     }
 
     let json: serde_json::Value = response
@@ -385,9 +387,11 @@ pub async fn gitlab_create_merge_request(
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("GitLab API error: {}", error_text));
+        log::error!("GitLab API error ({}): {}", status, error_text);
+        return Err(format!("GitLab 请求失败 (HTTP {})", status));
     }
 
     let mr: GitLabMergeRequest = response
@@ -446,9 +450,11 @@ pub async fn gitlab_merge_merge_request(
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("GitLab API error: {}", error_text));
+        log::error!("GitLab API error ({}): {}", status, error_text);
+        return Err(format!("GitLab 请求失败 (HTTP {})", status));
     }
 
     let mr: GitLabMergeRequest = response
@@ -483,9 +489,11 @@ pub async fn gitlab_approve_merge_request(
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("GitLab API error: {}", error_text));
+        log::error!("GitLab API error ({}): {}", status, error_text);
+        return Err(format!("GitLab 请求失败 (HTTP {})", status));
     }
 
     let result: serde_json::Value = response
@@ -560,9 +568,11 @@ pub async fn gitlab_create_note(
         .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("GitLab API error: {}", error_text));
+        log::error!("GitLab API error ({}): {}", status, error_text);
+        return Err(format!("GitLab 请求失败 (HTTP {})", status));
     }
 
     let note: GitLabNote = response

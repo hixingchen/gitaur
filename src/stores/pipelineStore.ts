@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { message } from 'antd';
 import { useRepoStore } from './repoStore';
+import { handleStoreError } from '../utils/error';
 
 /** 收集分支上的所有 commit message，拼接为 squash 默认消息 */
 async function collectBranchMessages(repoPath: string, branchName: string, targetBranch: string): Promise<string | undefined> {
@@ -517,8 +518,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       return;
 
     } catch (e) {
-      const errorMsg = String(e);
-      console.error('startTask error:', errorMsg);
+      const errorMsg = handleStoreError('startTask', e);
       currentTask = updateStep(currentTask, 'branch', {
         status: 'error', error: errorMsg, endTime: Date.now(),
       });
@@ -580,7 +580,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       updateTask(currentTask);
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('commitCode', e);
       // 提供更友好的错误信息
       let friendlyMsg = errorMsg;
       if (errorMsg.includes('nothing to commit')) {
@@ -656,7 +656,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('syncRemote', e);
       let friendlyMsg = errorMsg;
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
         friendlyMsg = '存在冲突，请在工作区手动解决后点击"继续同步"';
@@ -705,7 +705,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       updateTask(currentTask);
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('pushRemote', e);
       let friendlyMsg = errorMsg;
       if (errorMsg.includes('rejected')) {
         friendlyMsg = '推送被拒绝，可能需要先同步远程或检查权限';
@@ -827,7 +827,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       await executeCleanup(currentTask, taskId, repoPath);
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('createMR', e);
       message.error(errorMsg);
       // 保留 developing phase，用户可重试
       currentTask = setTaskStatus(currentTask, 'paused');
@@ -1014,7 +1014,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       updateTask(currentTask);
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('createVersionMR', e);
       message.error(errorMsg);
       currentTask = updateStep(currentTask, 'mr', { status: 'error', error: errorMsg, endTime: Date.now() });
       currentTask = setTaskStatus(currentTask, 'paused');
@@ -1286,7 +1286,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         });
       }
     } catch (e) {
-      set({ error: `中止 rebase 失败: ${e}` });
+      set({ error: handleStoreError('abortRebase', e) });
     }
   },
 
@@ -1390,7 +1390,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       message.success('同步完成，等待 MR 合并');
 
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('resumeFromConflict', e);
       let friendlyMsg = errorMsg;
 
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict') || errorMsg.includes('could not apply')) {
@@ -1628,7 +1628,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         message.success('变基完成');
       }
     } catch (e) {
-      const errorMsg = String(e);
+      const errorMsg = handleStoreError('rebaseContinue', e);
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
         message.error('仍有未解决的冲突，请检查文件');
       } else {
@@ -1685,7 +1685,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       message.success('MR 已关闭');
     } catch (e) {
-      set({ error: `关闭 MR 失败: ${e}` });
+      set({ error: handleStoreError('closeMR', e) });
     }
   },
 
@@ -1737,7 +1737,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       message.success('MR 已重新打开');
     } catch (e) {
-      set({ error: `重新打开 MR 失败: ${e}` });
+      set({ error: handleStoreError('reopenMR', e) });
     }
   },
 
@@ -1794,7 +1794,8 @@ async function executeTagAndCleanup(
       try {
         await invoke('git_tag', { repoPath, tag: task.version, message: task.version, target: tagTarget });
       } catch (e) {
-        if (String(e).includes('already exists')) {
+        const tagError = handleStoreError('executeTagAndCleanup', e);
+        if (tagError.includes('already exists')) {
           console.log(`Tag ${task.version} 已存在，跳过创建`);
         } else {
           throw e;
@@ -1932,10 +1933,10 @@ async function executeCleanup(
     message.success('任务完成，分支已清理');
 
   } catch (e) {
-    console.error('清理分支失败:', e);
+    const cleanupError = handleStoreError('executeTagAndCleanup', e);
     // 清理失败也要标记为完成，避免卡住
     task = updateStep(task, 'cleanup', {
-      status: 'error', error: String(e), endTime: Date.now(), description: '清理失败',
+      status: 'error', error: cleanupError, endTime: Date.now(), description: '清理失败',
     });
     task = setTaskStatus(task, 'success');
     task = { ...task, phase: 'finished' as PipelinePhase };
