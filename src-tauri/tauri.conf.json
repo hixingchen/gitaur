@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Gitaur",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.gitaur.app",
   "build": {
     "frontendDist": "../dist",
