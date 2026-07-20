@@ -47,7 +47,7 @@ interface RepoState {
   abortRebase: () => Promise<void>;
   rebaseContinue: () => Promise<void>;
   abortConflict: () => Promise<void>;
-  continueConflict: () => Promise<void>;
+  continueConflict: () => Promise<boolean>;
   stageFile: (file: string) => Promise<void>;
   unstageFile: (file: string) => Promise<void>;
   stageAll: () => Promise<void>;

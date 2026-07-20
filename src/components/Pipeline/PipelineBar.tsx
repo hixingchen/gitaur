@@ -74,7 +74,6 @@ export function PipelineBar({ task }: PipelineBarProps) {
   const abortRebase = usePipelineStore((s) => s.abortRebase);
   const rebaseContinue = usePipelineStore((s) => s.rebaseContinue);
   const loading = usePipelineStore((s) => s.loading);
-  const loadLog = useRepoStore((s) => s.loadLog);
 
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);

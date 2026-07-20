@@ -1,7 +1,7 @@
 import { Spin, Empty, Segmented, Button, Checkbox, Progress, Tooltip } from 'antd';
 import {
-  CheckCircleOutlined, PlayCircleOutlined,
-  WarningOutlined, ExclamationCircleOutlined, InfoCircleOutlined,
+  CheckCircleOutlined, WarningOutlined,
+  ExclamationCircleOutlined, InfoCircleOutlined,
 } from '@ant-design/icons';
 import { useRepoStore } from '../../stores/repoStore';
 import { usePipelineStore } from '../../stores/pipelineStore';
@@ -133,8 +133,6 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
   const stageFile = useRepoStore((s) => s.stageFile);
   const unstageFile = useRepoStore((s) => s.unstageFile);
   const stageAll = useRepoStore((s) => s.stageAll);
-  const continueConflict = useRepoStore((s) => s.continueConflict);
-  const pushAfterConflictResolved = usePipelineStore((s) => s.pushAfterConflictResolved);
   const conflictInitialTotal = useRepoStore((s) => s.conflictInitialTotal);
   const currentTask = usePipelineStore((s) => s.currentTask);
 
@@ -190,10 +188,6 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
             const totalCount = Math.max(conflictInitialTotal, conflict.totalCount);
             const resolvedCount = totalCount - conflictFiles.length;
             const allStaged = totalCount > 0 && conflictFiles.length === 0;
-            // 全部解决后才能继续：
-            // - 有冲突文件且全部暂存（allStaged）
-            // - 无冲突文件但在 rebase/merge 中（冲突已全部暂存，status 从 UU 变为 M）
-            const canContinue = allStaged || (totalCount === 0 && inMergeOrRebase && files.some((f) => f.staged));
 
             const conflictTypeLabel: Record<string, string> = {
               'both-modified': '双方修改',
@@ -254,7 +248,6 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
                     {conflictFiles.map((f) => {
                       const parts = f.path.split(/[/\\]/);
                       const name = parts.pop() || f.path;
-                      const dir = parts.join('/');
                       return (
                         <div
                           key={f.path}
