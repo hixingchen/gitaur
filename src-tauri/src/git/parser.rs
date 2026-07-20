@@ -55,10 +55,15 @@ pub fn parse_status(raw: &str) -> Vec<FileStatus> {
             let worktree_status = bytes[1] as char;
             let path = decode_git_path(&line[3..]);
 
-            // M/A/D/R in index → staged；'?' or ' ' → unstaged
-            let staged = index_status != ' ' && index_status != '?';
             // 存储完整双字符状态码，前端依赖此值检测冲突（UU/AA/DD 等）
             let status = format!("{}{}", index_status, worktree_status);
+
+            // 冲突状态码（UU/AA/DD/AU/UA/UD/DU）不是真正的 staged，需要用户解决
+            let is_conflict = matches!(status.as_str(),
+                "UU" | "AA" | "DD" | "AU" | "UA" | "UD" | "DU"
+            );
+            // M/A/D/R in index → staged；'?' or ' ' → unstaged；冲突 → 未暂存
+            let staged = !is_conflict && index_status != ' ' && index_status != '?';
 
             Some(FileStatus { path, status, staged })
         })

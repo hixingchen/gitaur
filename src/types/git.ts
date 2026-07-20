@@ -49,6 +49,29 @@ export interface CommitDetail {
   files: CommitFileChange[];
 }
 
+/** 冲突文件信息 */
+export interface ConflictFile {
+  path: string;
+  /** 冲突类型：both-modified / both-added / deleted-by-them 等 */
+  conflictType: string;
+  /** 是否已解决（已暂存） */
+  resolved: boolean;
+}
+
+/** 冲突状态 */
+export interface ConflictState {
+  /** 是否在冲突状态 */
+  inConflict: boolean;
+  /** 冲突类型：merge / rebase / none */
+  conflictType: string;
+  /** 冲突文件列表 */
+  conflictedFiles: ConflictFile[];
+  /** 已解决数 */
+  resolvedCount: number;
+  /** 总冲突数 */
+  totalCount: number;
+}
+
 /** Full repository status info returned by get_repo_status */
 export interface RepoInfo {
   path: string;
@@ -58,6 +81,7 @@ export interface RepoInfo {
   ahead: number;
   behind: number;
   hasUpstream: boolean;
+  conflict: ConflictState;
 }
 
 /** User-facing application settings */

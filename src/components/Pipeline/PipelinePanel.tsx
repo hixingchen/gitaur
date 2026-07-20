@@ -29,7 +29,7 @@ export function PipelinePanel() {
   const clearPipelineError = usePipelineStore((s) => s.clearError);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>('changes');
-  const [panelWidth, setPanelWidth] = useState(220);
+  const [panelWidth, setPanelWidth] = useState(400);
   const resizing = useRef(false);
 
   useMrPolling();
@@ -59,10 +59,15 @@ export function PipelinePanel() {
   const taskById = useMemo(() => new Map(allTasks.map(t => [t.id, t])), [allTasks]);
 
   const currentBranch = repoInfo?.currentBranch;
+  const inConflict = repoInfo?.conflict?.inConflict ?? false;
+  const taskInConflict = currentTask?.phase === 'paused_sync_error'
+    && (currentTask?.error || '').includes('冲突');
   useEffect(() => {
     if (!currentBranch || allTasks.length === 0) return;
     const hasError = currentTask?.steps.some((s) => s.status === 'error');
     if (hasError) return;
+    // 冲突中（rebase/merge）分支名会变成 "(no branch, ...)"，跳过自动切换
+    if (inConflict) return;
 
     const matchedTask = allTasks.find((t) =>
       t.branchName === currentBranch && t.status !== 'success' && t.status !== 'cancelled'
@@ -80,7 +85,7 @@ export function PipelinePanel() {
         setSelectedFile(null);
       }
     }
-  }, [currentBranch]);
+  }, [currentBranch, inConflict]);
 
   const commitStep = currentTask?.steps.find((s) => s.key === 'commit');
   const syncStep = currentTask?.steps.find((s) => s.key === 'sync');
@@ -164,9 +169,11 @@ export function PipelinePanel() {
         </Space>
 
         {allTasks.length > 0 && (
-          <Select
-            value={currentTask?.id}
-            onChange={async (taskId) => {
+          <Tooltip title={taskInConflict ? '请先解决冲突再切换任务' : ''}>
+            <Select
+              value={currentTask?.id}
+              disabled={taskInConflict}
+              onChange={async (taskId) => {
               const task = allTasks.find((t) => t.id === taskId);
               if (!task) return;
 
@@ -227,6 +234,7 @@ export function PipelinePanel() {
               );
             }}
           />
+          </Tooltip>
         )}
       </div>
 

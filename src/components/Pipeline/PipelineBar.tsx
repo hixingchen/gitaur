@@ -58,6 +58,8 @@ interface PipelineBarProps {
 export function PipelineBar({ task }: PipelineBarProps) {
   const { token } = theme.useToken();
   const repoPath = useRepoStore((s) => s.repoPath);
+  const repoInfo = useRepoStore((s) => s.repoInfo);
+  const conflict = repoInfo?.conflict;
   const startTask = usePipelineStore((s) => s.startTask);
   const commitCode = usePipelineStore((s) => s.commitCode);
   const syncRemote = usePipelineStore((s) => s.syncRemote);
@@ -309,16 +311,22 @@ export function PipelineBar({ task }: PipelineBarProps) {
       // ====== 同步错误暂停 ======
       case 'paused_sync_error': {
         const isConflict = (task.error || '').includes('冲突');
-        // 冲突：在工作区解决冲突后点击"已解决，继续"；也可取消变基
+        // 冲突是否全部解决：在 rebase/merge 中 且 无未解决的冲突文件
+        const inMergeOrRebase = conflict?.conflictType === 'rebase' || conflict?.conflictType === 'merge';
+        const conflictFiles = conflict?.conflictedFiles || [];
+        const allResolved = inMergeOrRebase && conflictFiles.every((f) => f.resolved);
+        // 冲突：解决后显示"已解决，继续"；也可取消变基
         // 未提交：先提交代码，再同步
         return (
           <Space size={6}>
             {isConflict ? (
               <>
-                <Button type="primary" icon={<CheckCircleOutlined />} size="small"
-                  onClick={() => rebaseContinue(task.id)} loading={loading}>
-                  已解决，继续
-                </Button>
+                {allResolved && (
+                  <Button type="primary" icon={<CheckCircleOutlined />} size="small"
+                    onClick={() => rebaseContinue(task.id)} loading={loading}>
+                    已解决，继续
+                  </Button>
+                )}
                 <Button danger icon={<CloseCircleOutlined />} size="small"
                   onClick={() => abortRebase(task.id)} loading={loading}>
                   取消变基
@@ -375,11 +383,9 @@ export function PipelineBar({ task }: PipelineBarProps) {
         // Feature 任务冲突，同步远程
         return (
           <Space size={6}>
-            <Tag color="error">⚠️ 冲突</Tag>
+            <Tag color="error">⚠️ MR 冲突</Tag>
             <Button type="primary" icon={<SyncOutlined />} size="small"
               onClick={() => resumeFromConflict(task.id)} loading={loading}>同步远程</Button>
-            <Button icon={<EditOutlined />} size="small"
-              onClick={() => setCommitModalOpen(true)}>提交代码</Button>
             <DeleteBtn />
           </Space>
         );

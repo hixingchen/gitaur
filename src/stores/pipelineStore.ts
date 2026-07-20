@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { load, type Store } from '@tauri-apps/plugin-store';
 import { message } from 'antd';
 import { useRepoStore } from './repoStore';
+import { useViewStore } from './viewStore';
 import { handleStoreError } from '../utils/error';
 
 /** 收集分支上的所有 commit message，拼接为 squash 默认消息 */
@@ -157,6 +158,7 @@ interface PipelineState {
   reopenMR: (taskId: string) => Promise<void>;
   resumeDevelopment: (taskId: string) => void;
   resumeFromConflict: (taskId: string) => Promise<void>;
+  pushAfterConflictResolved: () => Promise<void>;
   pollMrStatus: (taskId: string) => Promise<void>;
   checkAndCleanTasks: () => Promise<void>;
   clearError: () => void;
@@ -651,7 +653,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = updateStep(currentTask, 'sync', { status: 'process', startTime: Date.now(), description: '正在获取远程更新...' });
       updateTask(currentTask);
 
+      console.log('[syncRemote] 开始 fetch...');
       await invoke('git_fetch', { repoPath });
+      console.log('[syncRemote] fetch 完成，开始 rebase/merge...');
 
       const strategy = task.syncStrategy;
       currentTask = updateStep(currentTask, 'sync', { description: `正在${strategy === 'rebase' ? '变基' : '合并'}...` });
@@ -659,10 +663,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       try {
         if (strategy === 'rebase') {
+          console.log('[syncRemote] 执行 rebase...');
           await invoke('git_rebase', { repoPath, onto: `origin/${task.mrSettings.targetBranch}` });
         } else {
+          console.log('[syncRemote] 执行 merge...');
           await invoke('git_merge', { repoPath, branch: `origin/${task.mrSettings.targetBranch}` });
         }
+        console.log('[syncRemote] rebase/merge 成功');
 
         await useRepoStore.getState().refreshStatus();
 
@@ -676,7 +683,12 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       } catch (syncError) {
         const errorMsg = String(syncError);
+        console.log('[syncRemote] rebase/merge 失败:', errorMsg);
         if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict') || errorMsg.includes('could not apply')) {
+          console.log('[syncRemote] 检测到冲突，刷新状态...');
+          // 刷新状态，让 UI 显示冲突文件
+          await useRepoStore.getState().refreshStatus();
+          console.log('[syncRemote] 状态刷新完成');
           currentTask = updateStep(currentTask, 'sync', {
             status: 'error', error: '存在冲突，请手动解决后点击"继续同步"', endTime: Date.now(),
           });
@@ -732,9 +744,20 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         status: 'finish', endTime: Date.now(), description: force ? '已强制推送' : '已推送',
       });
 
-      // 版本任务推送后进入开发阶段，用户确认后创建 MR
-      currentTask = setTaskStatus(currentTask, 'paused');
-      currentTask = { ...currentTask, phase: 'developing' };
+      // MR 已存在 → 回到等待合并（轮询会自动处理合并）
+      if (task.mrIid) {
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'finish', description: `MR !${task.mrIid}`,
+        });
+        currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待 MR 合并' });
+        currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+        currentTask = { ...currentTask, phase: 'waiting_merge' };
+        message.success('已推送，等待 MR 合并');
+      } else {
+        // 版本任务推送后进入开发阶段，用户确认后创建 MR
+        currentTask = setTaskStatus(currentTask, 'paused');
+        currentTask = { ...currentTask, phase: 'developing' };
+      }
       updateTask(currentTask);
 
     } catch (e) {
@@ -1232,6 +1255,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const repoPath = getRepoPath();
     if (!repoPath) return;
 
+    useViewStore.getState().setSelectedFile(null);
+
     try {
       await invoke('git_abort_rebase', { repoPath });
       const { tasksByRepo } = get();
@@ -1306,9 +1331,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
     const updateTask = makeUpdateTask(repoPath, taskId, set);
 
-    // 1. 重置状态，开始同步
-    let currentTask = updateStep(task, 'wait', { status: 'wait', error: undefined, description: undefined });
-    currentTask = updateStep(currentTask, 'sync', { status: 'process', startTime: Date.now(), description: '正在同步远程...' });
+    // 1. 重置同步及后续所有步骤状态
+    let currentTask = updateStep(task, 'sync', { status: 'process', startTime: Date.now(), description: '正在同步远程...' });
+    currentTask = updateStep(currentTask, 'push', { status: 'wait', error: undefined, description: undefined });
+    currentTask = updateStep(currentTask, 'mr', { status: 'wait', error: undefined, description: undefined });
+    currentTask = updateStep(currentTask, 'wait', { status: 'wait', error: undefined, description: undefined });
     currentTask = { ...currentTask, mrPollStatus: undefined };
     currentTask = setTaskStatus(currentTask, 'running');
     currentTask = { ...currentTask, phase: 'syncing' };
@@ -1361,6 +1388,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict') || errorMsg.includes('could not apply')) {
         friendlyMsg = '存在冲突，请手动解决后点击"同步远程"';
+        // 刷新状态，让 UI 显示冲突文件
+        await useRepoStore.getState().refreshStatus();
         currentTask = updateStep(currentTask, 'sync', { status: 'error', error: friendlyMsg, endTime: Date.now() });
       } else if (errorMsg.includes('未提交的更改')) {
         friendlyMsg = '当前有未提交的更改，请先提交代码再同步';
@@ -1379,6 +1408,63 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       currentTask = { ...currentTask, phase: 'paused_sync_error' };
       updateTask(currentTask);
       message.error(friendlyMsg);
+    }
+  },
+
+  // 冲突解决后自动推送并恢复流程（由 FileTree 的 continueConflict 成功后调用）
+  pushAfterConflictResolved: async () => {
+    const repoPath = getRepoPath();
+    if (!repoPath) return;
+    const state = get();
+    const tasks = state.tasksByRepo[repoPath] || [];
+    const task = tasks.find((t) => t.phase === 'paused_sync_error');
+    if (!task || task.status === 'running') return;
+
+    const updateTask = makeUpdateTask(repoPath, task.id, set);
+
+    let currentTask = setTaskStatus(task, 'running');
+    currentTask = { ...currentTask, phase: 'pushing' };
+    currentTask = updateStep(currentTask, 'sync', {
+      status: 'finish', endTime: Date.now(), description: '冲突已解决',
+    });
+    currentTask = updateStep(currentTask, 'push', {
+      status: 'process', startTime: Date.now(), description: '正在推送...',
+    });
+    updateTask(currentTask);
+
+    try {
+      const force = task.syncStrategy === 'rebase';
+      await invoke('git_push', { repoPath, remote: 'origin', force });
+      await useRepoStore.getState().refreshStatus();
+
+      currentTask = updateStep(currentTask, 'push', {
+        status: 'finish', endTime: Date.now(), description: force ? '已强制推送' : '已推送',
+      });
+
+      // MR 已存在 → 等待合并；否则 → 开发阶段
+      if (task.mrIid) {
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'finish', description: `MR !${task.mrIid}`,
+        });
+        currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待 MR 合并' });
+        currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+        currentTask = { ...currentTask, phase: 'waiting_merge' };
+        message.success('冲突已解决并推送，等待 MR 合并');
+      } else {
+        currentTask = setTaskStatus(currentTask, 'paused');
+        currentTask = { ...currentTask, phase: 'developing' };
+        message.success('冲突已解决并推送');
+      }
+      updateTask(currentTask);
+    } catch (e) {
+      const errorMsg = handleStoreError('pushAfterConflictResolved', e);
+      message.error(`推送失败: ${errorMsg}`);
+      currentTask = updateStep(currentTask, 'push', {
+        status: 'error', error: errorMsg, endTime: Date.now(),
+      });
+      currentTask = setTaskStatus(currentTask, 'paused', errorMsg);
+      currentTask = { ...currentTask, phase: 'paused_sync_error' };
+      updateTask(currentTask);
     }
   },
 
@@ -1557,6 +1643,18 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const repoPath = getRepoPath();
     if (!repoPath) return;
 
+    useViewStore.getState().setSelectedFile(null);
+
+    const { tasksByRepo } = get();
+    const tasks = tasksByRepo[repoPath] || [];
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task || task.status === 'running') return;
+
+    const updateTask = makeUpdateTask(repoPath, taskId, set);
+
+    let currentTask = setTaskStatus(task, 'running');
+    updateTask(currentTask);
+
     try {
       // 先 stage 所有已解决的文件
       await invoke('git_stage_all', { repoPath });
@@ -1564,33 +1662,51 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       await invoke('git_rebase_continue', { repoPath });
       await useRepoStore.getState().refreshStatus();
 
-      const { tasksByRepo } = get();
-      const tasks = tasksByRepo[repoPath] || [];
-      const task = tasks.find((t) => t.id === taskId);
-      if (task) {
-        let updatedTask = updateStep(task, 'sync', {
-          status: 'finish', endTime: Date.now(), description: '已变基',
+      currentTask = updateStep(currentTask, 'sync', {
+        status: 'finish', endTime: Date.now(), description: '已变基',
+      });
+      currentTask = updateStep(currentTask, 'push', {
+        status: 'process', startTime: Date.now(), description: '正在推送...',
+      });
+      updateTask(currentTask);
+
+      // 推送到远程
+      const force = task.syncStrategy === 'rebase';
+      await invoke('git_push', { repoPath, remote: 'origin', force });
+      await useRepoStore.getState().refreshStatus();
+
+      currentTask = updateStep(currentTask, 'push', {
+        status: 'finish', endTime: Date.now(), description: force ? '已强制推送' : '已推送',
+      });
+
+      // MR 已存在 → 等待合并；否则 → 开发阶段
+      if (task.mrIid) {
+        currentTask = updateStep(currentTask, 'mr', {
+          status: 'finish', description: `MR !${task.mrIid}`,
         });
-        updatedTask = setTaskStatus(updatedTask, 'paused');
-        updatedTask = { ...updatedTask, phase: 'developing' as PipelinePhase };
-        set((state) => {
-          const repoTasks = (state.tasksByRepo[repoPath] || []).map((t) => (t.id === taskId ? updatedTask : t));
-          const newTasksByRepo = { ...state.tasksByRepo, [repoPath]: repoTasks };
-          persistTasks(newTasksByRepo);
-          return {
-            tasksByRepo: newTasksByRepo,
-            currentTask: state.currentTask?.id === taskId ? updatedTask : state.currentTask,
-          };
-        });
-        message.success('变基完成');
+        currentTask = updateStep(currentTask, 'wait', { status: 'process', description: '等待 MR 合并' });
+        currentTask = setTaskStatus(currentTask, 'paused', '等待 MR 合并');
+        currentTask = { ...currentTask, phase: 'waiting_merge' };
+        message.success('变基完成并推送，等待 MR 合并');
+      } else {
+        currentTask = setTaskStatus(currentTask, 'paused');
+        currentTask = { ...currentTask, phase: 'developing' };
+        message.success('变基完成并推送');
       }
+      updateTask(currentTask);
     } catch (e) {
       const errorMsg = handleStoreError('rebaseContinue', e);
       if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
+        await useRepoStore.getState().refreshStatus();
         message.error('仍有未解决的冲突，请检查文件');
+        currentTask = setTaskStatus(currentTask, 'paused', '仍有冲突');
+        currentTask = { ...currentTask, phase: 'paused_sync_error' };
       } else {
         message.error(`继续 rebase 失败: ${errorMsg}`);
+        currentTask = setTaskStatus(currentTask, 'paused', errorMsg);
+        currentTask = { ...currentTask, phase: 'paused_sync_error' };
       }
+      updateTask(currentTask);
     }
   },
 

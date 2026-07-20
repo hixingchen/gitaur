@@ -27,6 +27,31 @@ fn validate_repo_path(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(canonical)
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictState {
+    /// 是否在 merge/rebase 冲突状态
+    pub in_conflict: bool,
+    /// 冲突类型：merge / rebase / none
+    pub conflict_type: String,
+    /// 冲突文件列表
+    pub conflicted_files: Vec<ConflictFile>,
+    /// 已解决（已暂存）的冲突文件数
+    pub resolved_count: usize,
+    /// 总冲突文件数
+    pub total_count: usize,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictFile {
+    pub path: String,
+    /// 冲突类型：both-modified / both-added / deleted-by-them / deleted-by-us 等
+    pub conflict_type: String,
+    /// 是否已解决（已暂存）
+    pub resolved: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoInfo {
@@ -37,14 +62,76 @@ pub struct RepoInfo {
     pub ahead: usize,
     pub behind: usize,
     pub has_upstream: bool,
+    pub conflict: ConflictState,
+}
+
+/// 从 git status 输出中提取冲突文件信息
+fn detect_conflicts(status_output: &str, repo_path: &std::path::Path) -> ConflictState {
+    let conflict_codes = ["UU", "AA", "DD", "AU", "UA", "UD", "DU"];
+    let conflict_type_map = |code: &str| -> &str {
+        match code {
+            "UU" => "both-modified",
+            "AA" => "both-added",
+            "DD" => "both-deleted",
+            "AU" => "added-by-us",
+            "UA" => "added-by-them",
+            "UD" => "deleted-by-them",
+            "DU" => "deleted-by-us",
+            _ => "unknown",
+        }
+    };
+
+    let conflicted_files: Vec<ConflictFile> = status_output.lines()
+        .filter(|line| line.len() >= 4 && conflict_codes.contains(&&line[..2]))
+        .map(|line| {
+            let code = &line[..2];
+            let path = line.get(3..).unwrap_or("").trim().to_string();
+            // 已暂存的冲突文件（第一列有标记）视为已解决
+            let resolved = code.chars().next().unwrap_or(' ') != 'U' && code.chars().next().unwrap_or(' ') != ' ';
+            ConflictFile {
+                path,
+                conflict_type: conflict_type_map(code).to_string(),
+                resolved,
+            }
+        })
+        .collect();
+
+    let total_count = conflicted_files.len();
+    let resolved_count = conflicted_files.iter().filter(|f| f.resolved).count();
+
+    // 检查是否在 merge 或 rebase 状态
+    let in_rebase = repo_path.join(".git/rebase-merge").exists()
+        || repo_path.join(".git/rebase-apply").exists();
+    let in_merge = repo_path.join(".git/MERGE_HEAD").exists();
+
+    let in_conflict = total_count > 0 || in_rebase || in_merge;
+    let conflict_type = if in_rebase {
+        "rebase"
+    } else if in_merge {
+        "merge"
+    } else {
+        "none"
+    };
+
+    ConflictState {
+        in_conflict,
+        conflict_type: conflict_type.to_string(),
+        conflicted_files,
+        resolved_count,
+        total_count,
+    }
 }
 
 #[tauri::command]
 pub fn get_repo_status(repo_path: String) -> Result<RepoInfo, String> {
-    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    let canonical = validate_repo_path(&repo_path)?;
+    let repo_path = canonical.to_string_lossy().to_string();
     // Get status
     let status_output = executor::execute(&repo_path, &["status", "--porcelain", "-uall"])?;
     let status = parser::parse_status(&status_output.stdout);
+
+    // 检测冲突状态
+    let conflict = detect_conflicts(&status_output.stdout, &canonical);
 
     // Get branches
     let branch_output = executor::execute(&repo_path, &["branch", "-a", "-vv"])?;
@@ -69,6 +156,7 @@ pub fn get_repo_status(repo_path: String) -> Result<RepoInfo, String> {
         ahead,
         behind,
         has_upstream,
+        conflict,
     })
 }
 
@@ -161,14 +249,15 @@ pub fn git_checkout(
 }
 
 #[tauri::command]
-pub fn git_push(
+pub async fn git_push(
     repo_path: String,
     remote: Option<String>,
     force: Option<bool>,
     delete: Option<bool>,
     branch: Option<String>,
 ) -> Result<String, String> {
-    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+    let canonical = validate_repo_path(&repo_path)?;
+    let repo_path = canonical.to_string_lossy().to_string();
     let remote = remote.unwrap_or_else(|| "origin".to_string());
 
     // 验证 remote 和 branch 参数防止注入
@@ -177,32 +266,37 @@ pub fn git_push(
         validate_ref(b)?;
     }
 
-    let mut args: Vec<String> = vec!["push".into()];
+    let delete_flag = delete.unwrap_or(false);
+    let force_flag = force.unwrap_or(false);
+    let branch_val = branch.unwrap_or_else(|| "HEAD".to_string());
 
-    if delete.unwrap_or(false) {
-        // 删除远程分支：git push origin --delete branch_name
-        args.push(remote);
-        args.push("--delete".into());
-        args.push(branch.unwrap_or_else(|| "HEAD".into()));
-    } else {
-        // 正常推送：git push -u origin HEAD
-        args.push("-u".into());
-        args.push(remote);
-        args.push(branch.unwrap_or_else(|| "HEAD".into()));
+    tokio::task::spawn_blocking(move || {
+        let mut args: Vec<String> = vec!["push".into()];
 
-        if force.unwrap_or(false) {
-            args.push("--force-with-lease".into());
+        if delete_flag {
+            args.push(remote);
+            args.push("--delete".into());
+            args.push(branch_val);
+        } else {
+            args.push("-u".into());
+            args.push(remote);
+            args.push(branch_val);
+            if force_flag {
+                args.push("--force-with-lease".into());
+            }
         }
-    }
 
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = executor::execute(&repo_path, &arg_refs)?;
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let output = executor::execute(&repo_path, &arg_refs)?;
 
-    if !output.is_success() {
-        return Err(output.error_message().unwrap_or("Unknown error").to_string());
-    }
+        if !output.is_success() {
+            return Err(output.error_message().unwrap_or("Unknown error").to_string());
+        }
 
-    Ok(output.stdout)
+        Ok(output.stdout)
+    })
+    .await
+    .map_err(|e| format!("推送任务失败: {}", e))?
 }
 
 #[tauri::command]
@@ -472,7 +566,12 @@ pub fn git_merge(repo_path: String, branch: String, no_ff: Option<bool>, strateg
     let output = executor::execute(&repo_path, &args)?;
     if output.exit_code != 0 {
         log::error!("git merge failed: stdout={}, stderr={}", output.stdout, output.stderr);
-        return Err("合并失败，请查看日志了解详情".to_string());
+        // 检查是否因冲突而失败（MERGE_HEAD 存在表示合并暂停状态）
+        let merge_head = std::path::Path::new(&repo_path).join(".git").join("MERGE_HEAD");
+        if merge_head.exists() {
+            return Err(format!("CONFLICT: {}", output.stderr));
+        }
+        return Err(format!("合并失败: {}", output.stderr));
     }
     Ok(output.stdout)
 }
@@ -492,7 +591,13 @@ pub fn git_rebase(repo_path: String, onto: String) -> Result<String, String> {
     let output = executor::execute(&repo_path, &["rebase", &onto])?;
     if output.exit_code != 0 {
         log::error!("git rebase failed: stdout={}, stderr={}", output.stdout, output.stderr);
-        return Err("变基失败，请查看日志了解详情".to_string());
+        // 检查是否因冲突而失败（rebase 目录存在表示冲突暂停状态）
+        let rebase_dir = std::path::Path::new(&repo_path).join(".git").join("rebase-merge");
+        let rebase_apply = std::path::Path::new(&repo_path).join(".git").join("rebase-apply");
+        if rebase_dir.exists() || rebase_apply.exists() {
+            return Err(format!("CONFLICT: {}", output.stderr));
+        }
+        return Err(format!("变基失败: {}", output.stderr));
     }
     Ok(output.stdout)
 }
@@ -508,13 +613,51 @@ pub fn git_abort_rebase(repo_path: String) -> Result<String, String> {
     Ok(output.stdout)
 }
 
+/// 检查暂存区文件是否仍包含冲突标记
+fn check_staged_conflict_markers(repo_path: &str) -> Result<(), String> {
+    let diff_out = executor::execute(repo_path, &["diff", "--cached"])?;
+    let content = &diff_out.stdout;
+    if content.contains("<<<<<<<") && content.contains(">>>>>>>") {
+        // 找到具体哪些文件有冲突标记
+        let files_out = executor::execute(repo_path, &["diff", "--cached", "--name-only"])?;
+        let mut conflict_files: Vec<String> = Vec::new();
+        for file in files_out.stdout.lines() {
+            let file = file.trim();
+            if file.is_empty() { continue; }
+            // 从暂存区读取文件内容
+            if let Ok(content_out) = executor::execute(repo_path, &["show", &format!(":{}", file)]) {
+                if content_out.stdout.contains("<<<<<<<") && content_out.stdout.contains(">>>>>>>") {
+                    conflict_files.push(file.to_string());
+                }
+            }
+        }
+        if !conflict_files.is_empty() {
+            return Err(format!(
+                "以下文件仍包含冲突标记，请解决后再继续:\n{}",
+                conflict_files.join("\n")
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn git_rebase_continue(repo_path: String) -> Result<String, String> {
-    let repo_path = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
-    let output = executor::execute(&repo_path, &["rebase", "--continue"])?;
+    let repo_path_str = validate_repo_path(&repo_path)?.to_string_lossy().to_string();
+
+    // 先检查暂存区是否还有冲突标记
+    check_staged_conflict_markers(&repo_path_str)?;
+
+    let output = executor::execute(&repo_path_str, &["rebase", "--continue"])?;
     if output.exit_code != 0 {
         log::error!("git rebase --continue failed: stdout={}, stderr={}", output.stdout, output.stderr);
-        return Err("继续变基失败，请查看日志了解详情".to_string());
+        // 检查是否仍有冲突
+        let rebase_dir = std::path::Path::new(&repo_path_str).join(".git").join("rebase-merge");
+        let rebase_apply = std::path::Path::new(&repo_path_str).join(".git").join("rebase-apply");
+        if rebase_dir.exists() || rebase_apply.exists() {
+            return Err(format!("CONFLICT: {}", output.stderr));
+        }
+        return Err(format!("继续变基失败: {}", output.stderr));
     }
     Ok(output.stdout)
 }
@@ -542,6 +685,7 @@ pub fn check_rebase_state(repo_path: String) -> Result<bool, String> {
 #[serde(rename_all = "camelCase")]
 pub struct ConflictInfo {
     pub has_conflicts: bool,
+    pub in_merge_or_rebase: bool,
     pub conflicted_files: Vec<String>,
 }
 
@@ -557,8 +701,12 @@ pub fn check_conflicts(repo_path: String) -> Result<ConflictInfo, String> {
         .collect();
     let rebase_dir = canonical.join(".git/rebase-merge");
     let rebase_apply = canonical.join(".git/rebase-apply");
+    let merge_head = canonical.join(".git/MERGE_HEAD");
+    let in_rebase = rebase_dir.exists() || rebase_apply.exists();
+    let in_merge = merge_head.exists();
     Ok(ConflictInfo {
-        has_conflicts: !conflicted.is_empty() || rebase_dir.exists() || rebase_apply.exists(),
+        has_conflicts: !conflicted.is_empty() || in_rebase || in_merge,
+        in_merge_or_rebase: in_rebase || in_merge,
         conflicted_files: conflicted,
     })
 }

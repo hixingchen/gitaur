@@ -289,7 +289,14 @@ pub async fn gitlab_request(
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
         log::error!("GitLab API error ({}): {}", status, error_text);
-        return Err(format!("GitLab 请求失败 (HTTP {})", status));
+        let detail = match status.as_u16() {
+            400 => format!("请求参数错误: {}", error_text),
+            401 => "Token 无效或已过期，请在设置中重新配置".to_string(),
+            403 => "Token 权限不足，需要 api scope".to_string(),
+            404 => "资源不存在".to_string(),
+            _ => error_text.clone(),
+        };
+        return Err(format!("GitLab 请求失败 (HTTP {}) - {}", status, detail));
     }
 
     let json: serde_json::Value = response
@@ -391,7 +398,16 @@ pub async fn gitlab_create_merge_request(
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
         log::error!("GitLab API error ({}): {}", status, error_text);
-        return Err(format!("GitLab 请求失败 (HTTP {})", status));
+        let detail = match status.as_u16() {
+            400 => format!("请求参数错误: {}", error_text),
+            401 => "Token 无效或已过期，请在设置中重新配置".to_string(),
+            403 => "Token 权限不足，需要 api scope".to_string(),
+            404 => "项目不存在，请检查项目路径".to_string(),
+            409 => "MR 已存在（源分支和目标分支之间已有打开的 MR）".to_string(),
+            422 => format!("参数错误: {}", error_text),
+            _ => format!("请检查 GitLab 配置: {}", error_text),
+        };
+        return Err(format!("GitLab 请求失败 (HTTP {}) - {}", status, detail));
     }
 
     let mr: GitLabMergeRequest = response
@@ -454,7 +470,14 @@ pub async fn gitlab_merge_merge_request(
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
         log::error!("GitLab API error ({}): {}", status, error_text);
-        return Err(format!("GitLab 请求失败 (HTTP {})", status));
+        let detail = match status.as_u16() {
+            401 => "Token 无效或已过期，请在设置中重新配置",
+            403 => "Token 权限不足，需要 api scope",
+            404 => "项目或 MR 不存在",
+            409 => "MR 已合并或存在冲突",
+            _ => "请检查 GitLab 配置",
+        };
+        return Err(format!("GitLab 请求失败 (HTTP {}) - {}", status, detail));
     }
 
     let mr: GitLabMergeRequest = response

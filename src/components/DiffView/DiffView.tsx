@@ -70,6 +70,9 @@ export function DiffView() {
     if (!selectedFile || !repoInfo) return;
 
     let cancelled = false;
+    // 先重置编辑状态，避免 Monaco Editor 因 editMode 切换被卸载重装
+    setEditMode(false);
+    setEditContent('');
     setLoading(true);
 
     (async () => {
@@ -91,29 +94,25 @@ export function DiffView() {
         });
         if (cancelled) return;
         setWorkText(work);
-        setEditMode(work.includes('<<<<<<<') && work.includes('>>>>>>>'));
-        if (work.includes('<<<<<<<')) setEditContent(work);
+        // 内容加载完成后再判断编辑模式
+        const hasConflictMarkers = work.includes('<<<<<<<') && work.includes('>>>>>>>');
+        if (hasConflictMarkers) {
+          setEditContent(work);
+          setEditMode(true);
+        }
       } catch (e) {
         if (!cancelled) { setWorkText(''); workErr = String(e); }
       }
       if (!cancelled) {
         setLoading(false);
-        // 新文件（HEAD 不存在）是正常情况，只在工作区也读取失败时报错
         if (headErr && workErr) {
           message.error(`文件读取失败: ${workErr}`);
         }
       }
     })();
 
-    // 清理旧 Monaco 模型
-    return () => {
-      cancelled = true;
-      try {
-        editorRef.current?.getModel()?.dispose();
-        editorRef.current = null;
-      } catch { /* ignore */ }
-    };
-  }, [selectedFile, repoInfo?.path]);
+    return () => { cancelled = true; };
+  }, [selectedFile, repoInfo?.path, repoInfo?.conflict?.totalCount, repoInfo?.conflict?.resolvedCount]);
 
   const handleSave = async () => {
     if (!repoInfo || !selectedFile) return;

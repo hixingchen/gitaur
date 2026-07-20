@@ -16,6 +16,8 @@ interface RepoState {
   repoInfo: RepoInfo | null;
   loading: boolean;
   error: string | null;
+  /** 冲突初始总数（跨组件卸载持久化） */
+  conflictInitialTotal: number;
 
   // Logs
   logEntries: LogEntry[];
@@ -64,6 +66,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   repoInfo: null,
   loading: false,
   error: null,
+  conflictInitialTotal: 0,
   logEntries: [],
   logLoading: false,
   logBranch: null,
@@ -110,13 +113,22 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   refreshStatus: async () => {
-    const { repoPath } = get();
+    const { repoPath, conflictInitialTotal } = get();
     if (!repoPath) return;
     const reqId = ++_statusRequestId;
     set({ loading: true });
     try {
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath });
-      if (reqId === _statusRequestId) set({ repoInfo: info, loading: false });
+      if (reqId !== _statusRequestId) return;
+      // 更新冲突初始总数：新冲突数更大时更新（新冲突出现），冲突结束时重置
+      const newTotal = info.conflict.totalCount;
+      let updated = conflictInitialTotal;
+      if (!info.conflict.inConflict) {
+        updated = 0;
+      } else if (newTotal > conflictInitialTotal) {
+        updated = newTotal;
+      }
+      set({ repoInfo: info, loading: false, conflictInitialTotal: updated });
     } catch (e) {
       if (reqId === _statusRequestId) set({ error: handleStoreError('refreshStatus', e), loading: false });
     }
@@ -131,7 +143,10 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const info = await invoke<RepoInfo>('get_repo_status', { repoPath });
       if (reqId !== _statusRequestId) return;
       // 浅比较：如果核心字段没变，跳过更新避免触发重渲染
-      if (oldInfo
+      const conflictChanged = oldInfo?.conflict?.inConflict !== info.conflict.inConflict
+        || oldInfo?.conflict?.totalCount !== info.conflict.totalCount;
+      if (!conflictChanged
+        && oldInfo
         && oldInfo.currentBranch === info.currentBranch
         && oldInfo.ahead === info.ahead
         && oldInfo.behind === info.behind
@@ -156,7 +171,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       for (const f of info.status) {
         if (gitMap.has(f.path)) ordered.push(f);
       }
-      set({ repoInfo: { ...info, status: ordered } });
+      // 更新冲突初始总数
+      const { conflictInitialTotal } = get();
+      let updatedTotal = conflictInitialTotal;
+      if (!info.conflict.inConflict) {
+        updatedTotal = 0;
+      } else if (info.conflict.totalCount > conflictInitialTotal) {
+        updatedTotal = info.conflict.totalCount;
+      }
+      set({ repoInfo: { ...info, status: ordered }, conflictInitialTotal: updatedTotal });
     } catch (e) {
       if (reqId === _statusRequestId) set({ error: handleStoreError('refreshStatusSilent', e) });
     }
@@ -191,6 +214,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   commit: async (message: string, files: string[], amend?: boolean) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_commit', { repoPath, params: { message, files, amend } });
@@ -204,7 +228,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   checkout: async (target: string, createBranch?: boolean, startPoint?: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
-
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_checkout', {
@@ -234,6 +258,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   pull: async (remote?: string, rebase?: boolean) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_pull', { repoPath, remote, rebase });
@@ -247,6 +272,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   merge: async (branch: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_merge', { repoPath, branch });
@@ -261,6 +287,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   rebase: async (onto: string) => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_rebase', { repoPath, onto });
@@ -275,6 +302,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   abortRebase: async () => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_abort_rebase', { repoPath });
@@ -289,6 +317,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   rebaseContinue: async () => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       await invoke('git_rebase_continue', { repoPath });
@@ -304,6 +333,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   abortConflict: async () => {
     const { repoPath } = get();
     if (!repoPath) return;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       // 检查是否在 rebase 状态
@@ -322,9 +352,11 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   },
 
   // 继续解决冲突（自动判断 rebase 或 merge）
-  continueConflict: async () => {
+  // 成功：返回 true；还有冲突：返回 false；异常：throw
+  continueConflict: async (): Promise<boolean> => {
     const { repoPath } = get();
-    if (!repoPath) return;
+    if (!repoPath) return false;
+    useViewStore.getState().setSelectedFile(null);
     set({ loading: true, error: null });
     try {
       const rebaseDir = await invoke<boolean>('check_rebase_state', { repoPath });
@@ -335,8 +367,17 @@ export const useRepoStore = create<RepoState>((set, get) => ({
         await invoke('git_commit', { repoPath, message: 'Merge branch', files: [], amend: false });
       }
       await get().refreshStatus();
+      return true;
     } catch (e) {
-      set({ error: handleStoreError('continueConflict', e) });
+      await get().refreshStatus();
+      const errorMsg = handleStoreError('continueConflict', e);
+      set({ error: errorMsg });
+      // 还有冲突 → 返回 false（不 throw，让调用方区分"还有冲突"和"完全成功"）
+      if (errorMsg.includes('CONFLICT') || errorMsg.includes('conflict')) {
+        return false;
+      }
+      // 其他错误 → throw
+      throw e;
     } finally {
       set({ loading: false });
     }
