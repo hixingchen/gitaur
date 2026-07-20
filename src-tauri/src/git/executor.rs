@@ -32,8 +32,8 @@ pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
         DEFAULT_TIMEOUT
     };
 
-    let child = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(repo_path)
         .arg("-c")
         .arg("core.quotePath=false")
@@ -42,8 +42,16 @@ pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
         .env("GIT_EDITOR", "true")             // 编辑器设为 no-op，防止等待输入
         .env("GIT_MERGE_AUTOEDIT", "no")       // 合并不打开编辑器
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+
+    // Windows: 抑制 cmd 窗口弹出
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let child = cmd.spawn()
         .map_err(|e| format!("Failed to execute git: {}", e))?;
 
     // Wait with timeout using a background thread
@@ -69,7 +77,13 @@ pub fn execute(repo_path: &str, args: &[&str]) -> Result<GitOutput, String> {
             } else {
                 let kill_result = {
                     #[cfg(windows)]
-                    { Command::new("taskkill").args(["/F", "/PID", &child_id.to_string()]).output() }
+                    {
+                        use std::os::windows::process::CommandExt;
+                        Command::new("taskkill")
+                            .args(["/F", "/PID", &child_id.to_string()])
+                            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                            .output()
+                    }
                     #[cfg(not(windows))]
                     { Command::new("kill").args(["-9", &child_id.to_string()]).output() }
                 };
