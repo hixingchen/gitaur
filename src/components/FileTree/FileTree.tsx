@@ -327,7 +327,7 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
                     itemSize={ITEM_HEIGHT}
                     width="100%"
                   >
-                    {({ index, style }) => (
+                    {({ index, style }: { index: number; style: React.CSSProperties }) => (
                       <div style={style}>
                         <FileItem
                           file={stagedFiles[index]}
@@ -379,7 +379,7 @@ export function FileTree({ tab, onTabChange, onSelectFile }: FileTreeProps) {
                     itemSize={ITEM_HEIGHT}
                     width="100%"
                   >
-                    {({ index, style }) => (
+                    {({ index, style }: { index: number; style: React.CSSProperties }) => (
                       <div style={style}>
                         <FileItem
                           file={unstagedFiles[index]}
